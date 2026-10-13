@@ -151,3 +151,8 @@ EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'False') == 'True'
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'LSMS <no-reply@localhost>')
+
+SIMPLE_JWT = {
+    # Record logins made through the API so admins can see when people last signed in.
+    'UPDATE_LAST_LOGIN': True,
+}

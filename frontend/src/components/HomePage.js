@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 export default function HomePage() {
   const navigate = useNavigate();
   return (
-    <Box sx={{ minHeight: '100vh', bgcolor: '#e3eafc', py: 8 }}>
+    <Box sx={{ py: 4 }}>
       <Box sx={{ maxWidth: 600, mx: 'auto', textAlign: 'center', mb: 8 }}>
         <Paper elevation={3} sx={{ p: 5 }}>
           <Typography variant="h3" fontWeight="bold" gutterBottom>

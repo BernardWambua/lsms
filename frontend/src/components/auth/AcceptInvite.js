@@ -2,13 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Button, TextField, Typography, Paper, CircularProgress } from '@mui/material';
 import api from '../../api';
-
-function firstError(data) {
-  if (!data) return '';
-  if (data.detail) return data.detail;
-  const messages = Object.values(data)[0];
-  return Array.isArray(messages) ? messages[0] : String(messages);
-}
+import { errorMessage } from '../../utils/errors';
 
 function AcceptInvite() {
   const { token } = useParams();
@@ -23,7 +17,7 @@ function AcceptInvite() {
     api.get(`/invitations/accept/${token}/`)
       .then((res) => setInvitation(res.data))
       .catch((err) => setLoadError(
-        err.response?.status === 404 ? 'This invitation link is not valid.' : firstError(err.response?.data) || err.message
+        err.response?.status === 404 ? 'This invitation link is not valid.' : errorMessage(err)
       ));
   }, [token]);
 
@@ -37,12 +31,12 @@ function AcceptInvite() {
       setSuccess('Your account is ready. Redirecting to login...');
       setTimeout(() => navigate('/login'), 1200);
     } catch (err) {
-      setError(firstError(err.response?.data) || err.message);
+      setError(errorMessage(err));
     }
   };
 
   return (
-    <Box display="flex" alignItems="center" justifyContent="center" minHeight="100vh" bgcolor="#f3f4f6">
+    <Box display="flex" alignItems="center" justifyContent="center" minHeight="80vh">
       <Paper elevation={3} sx={{ p: 4, width: 380 }}>
         <Typography variant="h5" gutterBottom align="center">Join your organisation</Typography>
         {!invitation && !loadError && <Box textAlign="center"><CircularProgress /></Box>}

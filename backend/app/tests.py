@@ -89,7 +89,7 @@ class TenantIsolationTests(TenantTestCase):
                 self.assertNotIn(str(self.data_b[endpoint].pk), ids)
 
     def test_other_tenants_objects_are_not_found(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         for endpoint, obj in self.data_b.items():
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(self.client.get(f'/api/{endpoint}/{obj.pk}/').status_code, 404)
@@ -108,13 +108,13 @@ class TenantIsolationTests(TenantTestCase):
         self.assertEqual(self.client.get(f'/api/tenants/{self.tenant_b.pk}/').status_code, 404)
 
     def test_create_assigns_own_tenant_even_if_another_is_sent(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         response = self.client.post('/api/org-units/', {'name': 'Ops', 'tenant': str(self.tenant_b.pk)})
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual(OrgUnit.objects.get(pk=response.json()['id']).tenant, self.tenant_a)
 
     def test_update_cannot_move_object_to_another_tenant(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         org_unit = self.data_a['org-units']
         response = self.client.patch(f'/api/org-units/{org_unit.pk}/', {'tenant': str(self.tenant_b.pk)})
         self.assertEqual(response.status_code, 200, response.content)
@@ -122,7 +122,7 @@ class TenantIsolationTests(TenantTestCase):
         self.assertEqual(org_unit.tenant, self.tenant_a)
 
     def test_cannot_reference_another_tenants_objects(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         response = self.client.post('/api/job-role-skills/', {
             'job_role': str(self.data_a['job-roles'].pk),
             'skill': str(self.data_b['skills'].pk),
@@ -164,6 +164,28 @@ class TenantIsolationTests(TenantTestCase):
             'response_rating': 5,
         })
         self.assertEqual(response.status_code, 400)
+
+
+class StructurePermissionTests(TenantTestCase):
+    def test_employees_can_read_but_not_change_structure(self):
+        self.login(self.user_a)
+        for endpoint in ('org-units', 'job-roles', 'skills', 'job-role-skills'):
+            with self.subTest(endpoint=endpoint):
+                obj = self.data_a[endpoint]
+                self.assertEqual(self.client.get(f'/api/{endpoint}/{obj.pk}/').status_code, 200)
+                self.assertEqual(self.client.post(f'/api/{endpoint}/', {}).status_code, 403)
+                self.assertEqual(self.client.patch(f'/api/{endpoint}/{obj.pk}/', {}).status_code, 403)
+                self.assertEqual(self.client.delete(f'/api/{endpoint}/{obj.pk}/').status_code, 403)
+
+    def test_admin_builds_org_structure(self):
+        self.login(self.admin_a)
+        parent = self.client.post('/api/org-units/', {'name': 'Engineering'}).json()['id']
+        child = self.client.post('/api/org-units/', {'name': 'Platform', 'parent': parent})
+        self.assertEqual(child.status_code, 201, child.content)
+        role = self.client.post('/api/job-roles/', {'title': 'SRE', 'org_unit': child.json()['id']})
+        self.assertEqual(role.status_code, 201, role.content)
+        skill = self.client.post('/api/skills/', {'name': 'Kubernetes', 'type': 'technical', 'difficulty': 4, 'usage_frequency': 5, 'impact_if_missing': 5})
+        self.assertEqual(skill.status_code, 201, skill.content)
 
 
 class TenantEndpointTests(TenantTestCase):
@@ -345,6 +367,72 @@ class UserEndpointTests(TenantTestCase):
         self.client.patch(f'/api/users/{self.user_a.pk}/', {'password': 'another-Pass-456'})
         self.user_a.refresh_from_db()
         self.assertTrue(self.user_a.check_password('another-Pass-456'))
+
+    def test_me_returns_the_logged_in_user(self):
+        self.login(self.admin_a)
+        data = self.client.get('/api/users/me/').json()
+        self.assertEqual((data['username'], data['role'], data['tenant'], data['is_superuser']), ('admin_a', 'admin', str(self.tenant_a.pk), False))
+        self.assertEqual(APIClient().get('/api/users/me/').status_code, 401)
+
+    def test_admin_can_deactivate_users_but_employees_cannot(self):
+        self.login(self.user_a)
+        self.assertEqual(self.client.patch(f'/api/users/{self.user_a.pk}/', {'is_active': False}).status_code, 403)
+        self.login(self.admin_a)
+        self.assertEqual(self.client.patch(f'/api/users/{self.user_a.pk}/', {'is_active': False}).status_code, 200)
+        self.user_a.refresh_from_db()
+        self.assertFalse(self.user_a.is_active)
+
+    def test_admin_cannot_lock_themselves_out(self):
+        self.login(self.admin_a)
+        self.assertEqual(self.client.patch(f'/api/users/{self.admin_a.pk}/', {'role': 'employee'}).status_code, 403)
+        self.assertEqual(self.client.patch(f'/api/users/{self.admin_a.pk}/', {'is_active': False}).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/users/{self.admin_a.pk}/').status_code, 403)
+        self.assertEqual(self.client.patch(f'/api/users/{self.admin_a.pk}/', {'first_name': 'Ada'}).status_code, 200)
+
+
+class SuperAdminTests(TenantTestCase):
+    def setUp(self):
+        super().setUp()
+        self.superadmin = User.objects.create_superuser(username='root', password=PASSWORD, email='root@example.com')
+        self.login(self.superadmin)
+
+    def test_tenant_list_includes_counts(self):
+        Invitation.objects.create(tenant=self.tenant_a, email='pending@acme.com')
+        Invitation.objects.create(tenant=self.tenant_a, email='old@acme.com', expires_at=timezone.now() - timedelta(days=1))
+        acme = next(t for t in self.client.get('/api/tenants/').json() if t['name'] == 'Acme')
+        self.assertEqual(
+            (acme['user_count'], acme['org_unit_count'], acme['job_role_count'], acme['skill_count'], acme['pending_invitation_count']),
+            (2, 1, 1, 1, 1),
+        )
+
+    def test_reads_every_tenants_data_and_can_filter_by_tenant(self):
+        everything = self.ids(self.client.get('/api/org-units/'))
+        self.assertEqual(everything, {str(self.data_a['org-units'].pk), str(self.data_b['org-units'].pk)})
+        only_b = self.ids(self.client.get(f'/api/users/?tenant={self.tenant_b.pk}'))
+        self.assertEqual(only_b, {str(self.user_b.pk)})
+        only_a = self.ids(self.client.get(f'/api/invitations/?tenant={self.tenant_a.pk}'))
+        self.assertEqual(only_a, set())
+
+    def test_cannot_change_organisation_data(self):
+        org_unit = self.data_a['org-units']
+        self.assertEqual(self.client.post('/api/org-units/', {'name': 'X'}).status_code, 403)
+        self.assertEqual(self.client.patch(f'/api/org-units/{org_unit.pk}/', {'name': 'X'}).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/org-units/{org_unit.pk}/').status_code, 403)
+
+    def test_can_manage_users_in_any_tenant(self):
+        response = self.client.patch(f'/api/users/{self.user_b.pk}/', {'role': 'admin'})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.user_b.refresh_from_db()
+        self.assertEqual(self.user_b.role, 'admin')
+
+    def test_can_invite_into_any_tenant(self):
+        response = self.client.post('/api/invitations/', {'email': 'new@globex.com', 'role': 'admin', 'tenant': str(self.tenant_b.pk)})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Invitation.objects.get(email='new@globex.com').tenant, self.tenant_b)
+
+    def test_me_has_no_tenant(self):
+        data = self.client.get('/api/users/me/').json()
+        self.assertEqual((data['is_superuser'], data['tenant']), (True, None))
 
 
 class ModelTests(TestCase):
