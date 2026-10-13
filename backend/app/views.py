@@ -1,6 +1,11 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count, Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import viewsets, permissions, mixins, status
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -20,11 +25,37 @@ class IsSuperAdminOrTenantAdmin(permissions.BasePermission):
         return bool(request.user and (request.user.is_superuser or is_tenant_admin(request.user)))
 
 
+class IsTenantAdminOrReadOnly(permissions.BasePermission):
+    """Anyone in the tenant can read; only its admins can change the organisation's structure."""
+
+    def has_permission(self, request, view):
+        return request.method in permissions.SAFE_METHODS or is_tenant_admin(request.user)
+
+
+def can_manage_users(user):
+    return user.is_superuser or is_tenant_admin(user)
+
+
 class TenantScopedMixin:
-    """Limits every request to rows belonging to the requesting user's tenant."""
+    """
+    Limits every request to rows belonging to the requesting user's tenant.
+    Super admins can read every tenant's rows (narrowed with ?tenant=<id>),
+    but only change them where a viewset sets ``superadmin_can_write``.
+    """
+    superadmin_can_write = False
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.user.is_superuser and request.method not in permissions.SAFE_METHODS and not self.superadmin_can_write:
+            raise PermissionDenied('Super admins can view organisation data but not change it.')
 
     def get_queryset(self):
-        return scope_to_tenant(super().get_queryset(), self.request.user.tenant_id)
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser:
+            tenant_id = self.request.query_params.get('tenant')
+            return scope_to_tenant(queryset, tenant_id) if tenant_id else queryset
+        return scope_to_tenant(queryset, user.tenant_id)
 
     def perform_create(self, serializer):
         serializer.save(tenant=self.request.user.tenant)
@@ -33,17 +64,17 @@ class TenantScopedMixin:
 class SkillViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = Skill.objects.all()
     serializer_class = SkillSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
 
 class JobRoleViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = JobRole.objects.all()
     serializer_class = JobRoleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
 
 class JobRoleSkillViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = JobRoleSkill.objects.all()
     serializer_class = JobRoleSkillSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
 
 class EmployeeSkillRatingViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = EmployeeSkillRating.objects.all()
@@ -58,7 +89,60 @@ class TrainingCalendarViewSet(TenantScopedMixin, viewsets.ModelViewSet):
 class OrgUnitViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = OrgUnit.objects.all()
     serializer_class = OrgUnitSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+class OrgStructureView(APIView):
+    """
+    Admin-only: the tenant's org units as a nested tree, each with its job roles,
+    plus the roles that aren't placed in any unit. Super admins pass ?tenant=<id>.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrTenantAdmin]
+
+    def get(self, request):
+        if request.user.is_superuser:
+            tenant_id = request.query_params.get('tenant')
+            if not tenant_id:
+                return Response({'tenant': ['This parameter is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                tenant = get_object_or_404(Tenant, pk=tenant_id)
+            except DjangoValidationError:
+                raise Http404
+        else:
+            tenant = request.user.tenant
+
+        units = list(scope_to_tenant(OrgUnit.objects.order_by('name'), tenant.pk))
+        roles = list(scope_to_tenant(JobRole.objects.order_by('title'), tenant.pk))
+
+        roles_by_unit = {}
+        for role in roles:
+            roles_by_unit.setdefault(role.org_unit_id, []).append(
+                {'id': role.pk, 'title': role.title, 'description': role.description}
+            )
+        children_by_parent = {}
+        for unit in units:
+            children_by_parent.setdefault(unit.parent_id, []).append(unit)
+
+        visited = set()
+
+        def build(unit):
+            visited.add(unit.pk)
+            return {
+                'id': unit.pk,
+                'name': unit.name,
+                'job_roles': roles_by_unit.get(unit.pk, []),
+                'children': [build(child) for child in children_by_parent.get(unit.pk, []) if child.pk not in visited],
+            }
+
+        unit_ids = {unit.pk for unit in units}
+        tree = [build(unit) for unit in units if unit.parent_id is None or unit.parent_id not in unit_ids]
+        # A unit whose parent chain loops back on itself has no root; show it at the top level rather than lose it.
+        tree += [build(unit) for unit in units if unit.pk not in visited]
+
+        return Response({
+            'tenant': {'id': tenant.pk, 'name': tenant.name},
+            'units': tree,
+            'unassigned_job_roles': roles_by_unit.get(None, []),
+        })
 
 # Tenant ViewSet: super admins create and manage organisations; everyone else
 # sees only their own, and its admins can edit it.
@@ -68,9 +152,19 @@ class TenantViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        queryset = super().get_queryset().annotate(
+            user_count=Count('user', distinct=True),
+            org_unit_count=Count('orgunit', distinct=True),
+            job_role_count=Count('jobrole', distinct=True),
+            skill_count=Count('skill', distinct=True),
+            pending_invitation_count=Count(
+                'invitations', distinct=True,
+                filter=Q(invitations__accepted_at__isnull=True, invitations__expires_at__gt=timezone.now()),
+            ),
+        ).order_by('name')
         if self.request.user.is_superuser:
-            return super().get_queryset()
-        return super().get_queryset().filter(id=self.request.user.tenant_id)
+            return queryset
+        return queryset.filter(id=self.request.user.tenant_id)
 
     def perform_create(self, serializer):
         if not self.request.user.is_superuser:
@@ -98,9 +192,11 @@ class InvitationViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.R
     permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrTenantAdmin]
 
     def get_queryset(self):
+        queryset = super().get_queryset()
         if self.request.user.is_superuser:
-            return super().get_queryset()
-        return super().get_queryset().filter(tenant=self.request.user.tenant_id)
+            tenant_id = self.request.query_params.get('tenant')
+            return queryset.filter(tenant=tenant_id) if tenant_id else queryset
+        return queryset.filter(tenant=self.request.user.tenant_id)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -162,6 +258,15 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = get_user_model().objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
+    superadmin_can_write = True
+
+    def get_queryset(self):
+        return super().get_queryset().order_by('username')
+
+    @action(detail=False, methods=['get'])
+    def me(self, request):
+        """The logged-in user, so the frontend knows who they are and what they can do."""
+        return Response(self.get_serializer(request.user).data)
 
     # There is no public signup: people join through an invitation, or a tenant admin adds them here.
     def perform_create(self, serializer):
@@ -171,16 +276,24 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         user = self.request.user
-        if not is_tenant_admin(user):
+        changes_access = any(
+            field in serializer.validated_data and serializer.validated_data[field] != getattr(serializer.instance, field)
+            for field in ('role', 'is_active')
+        )
+        if not can_manage_users(user):
             if serializer.instance.pk != user.pk:
                 raise PermissionDenied('You can only edit your own account.')
-            if 'role' in serializer.validated_data and serializer.validated_data['role'] != user.role:
-                raise PermissionDenied('Only tenant admins can change roles.')
+            if changes_access:
+                raise PermissionDenied('Only tenant admins can change roles or deactivate users.')
+        elif changes_access and serializer.instance.pk == user.pk:
+            raise PermissionDenied("You can't change your own role or deactivate yourself.")
         serializer.save()
 
     def perform_destroy(self, instance):
-        if not is_tenant_admin(self.request.user):
+        if not can_manage_users(self.request.user):
             raise PermissionDenied('Only tenant admins can delete users.')
+        if instance.pk == self.request.user.pk:
+            raise PermissionDenied("You can't delete your own account.")
         instance.delete()
 
 # QuestionResponse ViewSet (tenant comes from the question's questionnaire)

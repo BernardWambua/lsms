@@ -69,8 +69,8 @@ class UserSerializer(TenantScopedSerializer):
 
     class Meta:
         model = get_user_model()
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_active', 'tenant', 'role', 'password')
-        read_only_fields = ('id', 'is_staff', 'is_active')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'is_active', 'tenant', 'role', 'date_joined', 'last_login', 'password')
+        read_only_fields = ('id', 'is_staff', 'is_superuser', 'date_joined', 'last_login')
 
     def validate_password(self, value):
         run_password_validators(value, self.instance)
@@ -92,10 +92,16 @@ class UserSerializer(TenantScopedSerializer):
 class TenantSerializer(serializers.ModelSerializer):
     # Super admins can name the organisation's first admin when creating it.
     admin_email = serializers.EmailField(write_only=True, required=False)
+    # Filled in by TenantViewSet's annotated queryset; absent right after a create.
+    user_count = serializers.IntegerField(read_only=True, default=0)
+    org_unit_count = serializers.IntegerField(read_only=True, default=0)
+    job_role_count = serializers.IntegerField(read_only=True, default=0)
+    skill_count = serializers.IntegerField(read_only=True, default=0)
+    pending_invitation_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Tenant
-        fields = ('id', 'name', 'industry', 'created_at', 'admin_email')
+        fields = ('id', 'name', 'industry', 'created_at', 'admin_email', 'user_count', 'org_unit_count', 'job_role_count', 'skill_count', 'pending_invitation_count')
 
     def update(self, instance, validated_data):
         validated_data.pop('admin_email', None)

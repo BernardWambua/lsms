@@ -1,34 +1,30 @@
-import api from '../../api';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { Box, Button, TextField, Typography, Paper } from '@mui/material';
+import { useAuth } from './authContext';
 
-function Login({ onLoginSuccess }) {
+function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const { user, login } = useAuth();
   const navigate = useNavigate();
+
+  if (user) return <Navigate to="/" replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     try {
-      const response = await api.post('/token/', { username, password });
-      sessionStorage.setItem('access_token', response.data.access);
-      sessionStorage.setItem('refresh_token', response.data.refresh);
-      sessionStorage.setItem('username', username);
-      if (onLoginSuccess) {
-        onLoginSuccess(username);
-      }
-      alert('Login successful');
-      navigate('/'); // Redirect to LandingPage
+      await login(username, password);
+      navigate('/');
     } catch (error) {
       setError('Login failed. Please check your credentials.');
     }
   };
 
   return (
-    <Box display="flex" alignItems="center" justifyContent="center" minHeight="100vh" bgcolor="#f3f4f6">
+    <Box display="flex" alignItems="center" justifyContent="center" minHeight="80vh">
       <Paper elevation={3} sx={{ p: 4, width: 350 }}>
         <Typography variant="h5" component="h1" gutterBottom align="center">
           Login
