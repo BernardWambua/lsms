@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+
+# Django
+*.sqlite3
+/backend/media/
+/backend/staticfiles/
+
+# Node
+node_modules/
+/frontend/build/
+/frontend/coverage/
+npm-debug.log*
+
+# Environment files (commit the .env.example copies instead)
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
