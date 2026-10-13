@@ -48,6 +48,25 @@ Invite links open `/accept-invite/<token>` in the frontend, where the person pic
 
 Invitation emails print to the backend console unless SMTP is configured (see `backend/.env.example`).
 
+## Skill gaps (Training Needs Assessment)
+
+Each job role has a skill profile (`/api/job-role-skills/`): the proficiency level the role requires (1 Awareness to 5 Expert) and, optionally, its own difficulty, importance and frequency (DIF) scores for that skill. DIF scores left blank fall back to the skill's. People are placed in a post through `job_role` on `/api/users/`; their department is that role's org unit.
+
+The gap engine (`backend/app/gaps.py`) compares the profile with each person's latest rating, preferring the manager's rating over the self rating:
+
+- **gap** = required level minus current level, never below 0
+- **priority score** = gap x mean DIF score (0 to 20; 8+ high, 4+ medium)
+- **gap score** = DIF-weighted shortfall as a percentage of DIF-weighted required levels (0 = all requirements met)
+
+Skills nobody has rated are reported as not assessed and left out of the scores; `assessment_coverage` shows how much of the profile has been rated.
+
+| Endpoint | Who | Returns |
+| --- | --- | --- |
+| `GET /api/gaps/me/` | anyone in a tenant | your gaps per skill |
+| `GET /api/gaps/people/<id>/` | yourself, or admins and managers | one person's gaps per skill |
+| `GET /api/gaps/departments/<org unit id>/` | admins and managers | the unit and everything below it: staff, coverage, gap score, ranked training needs per skill, people, sub-unit breakdown |
+| `GET /api/gaps/institution/` | admins and managers (super admins add `?tenant=<id>`) | the same for the whole institution, by top-level unit |
+
 ## Conventions
 
 - Every model has a UUID primary key and a `tenant` foreign key. API viewsets use `TenantScopedMixin` so each user only sees and creates data for their own tenant.

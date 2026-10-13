@@ -14,6 +14,7 @@ from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingC
 from .serializers import SkillSerializer, JobRoleSerializer, JobRoleSkillSerializer, EmployeeSkillRatingSerializer, TrainingCalendarSerializer, OrgUnitSerializer, TenantSerializer, QuestionnaireSerializer, QuestionSerializer, QuestionChoiceSerializer, QuestionResponseSerializer, UserSerializer, InvitationSerializer, AcceptInvitationSerializer
 from .invitations import create_invitation, accept_invitation, InvitationUnavailable
 from .tenancy import scope_to_tenant
+from .gaps import GapEngine
 
 
 def is_tenant_admin(user):
@@ -143,6 +144,75 @@ class OrgStructureView(APIView):
             'units': tree,
             'unassigned_job_roles': roles_by_unit.get(None, []),
         })
+
+def can_view_others_gaps(user):
+    return user.is_superuser or (user.tenant_id is not None and user.role in ('admin', 'manager'))
+
+
+class IsGapReviewer(permissions.BasePermission):
+    """Super admins, and admins and managers within their own tenant, can see anyone's gaps."""
+
+    def has_permission(self, request, view):
+        return can_view_others_gaps(request.user)
+
+
+def get_tenant_object(request, model, pk):
+    """Look up ``model`` by ``pk`` inside the requester's tenant (any tenant for super admins); 404 otherwise."""
+    queryset = model.objects.all()
+    if not request.user.is_superuser:
+        queryset = scope_to_tenant(queryset, request.user.tenant_id)
+    try:
+        return get_object_or_404(queryset, pk=pk)
+    except DjangoValidationError:
+        raise Http404
+
+
+class MyGapsView(APIView):
+    """The logged-in person's skill gaps against their job role."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if request.user.tenant is None:
+            return Response({'detail': 'Super admins have no job role to measure.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(GapEngine(request.user.tenant).person(request.user))
+
+
+class PersonGapsView(APIView):
+    """One person's skill gaps. People can see their own; admins and managers can see anyone in their tenant."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        person = get_tenant_object(request, get_user_model(), pk)
+        if person.pk != request.user.pk and not can_view_others_gaps(request.user):
+            raise PermissionDenied("You can only view your own skill gaps.")
+        if person.tenant is None:
+            raise Http404
+        return Response(GapEngine(person.tenant).person(person))
+
+
+class DepartmentGapsView(APIView):
+    """Gaps for everyone in an org unit and the units below it, with a breakdown by sub-unit."""
+    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+
+    def get(self, request, pk):
+        unit = get_tenant_object(request, OrgUnit, pk)
+        return Response(GapEngine(unit.tenant).department(unit))
+
+
+class InstitutionGapsView(APIView):
+    """Gaps across the whole institution, with a breakdown by top-level unit. Super admins pass ?tenant=<id>."""
+    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+
+    def get(self, request):
+        if request.user.is_superuser:
+            tenant_id = request.query_params.get('tenant')
+            if not tenant_id:
+                return Response({'tenant': ['This parameter is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            tenant = get_tenant_object(request, Tenant, tenant_id)
+        else:
+            tenant = request.user.tenant
+        return Response(GapEngine(tenant).institution())
+
 
 # Tenant ViewSet: super admins create and manage organisations; everyone else
 # sees only their own, and its admins can edit it.
@@ -278,13 +348,13 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
         user = self.request.user
         changes_access = any(
             field in serializer.validated_data and serializer.validated_data[field] != getattr(serializer.instance, field)
-            for field in ('role', 'is_active')
+            for field in ('role', 'is_active', 'job_role')
         )
         if not can_manage_users(user):
             if serializer.instance.pk != user.pk:
                 raise PermissionDenied('You can only edit your own account.')
             if changes_access:
-                raise PermissionDenied('Only tenant admins can change roles or deactivate users.')
+                raise PermissionDenied('Only tenant admins can change roles, job roles or deactivate users.')
         elif changes_access and serializer.instance.pk == user.pk:
             raise PermissionDenied("You can't change your own role or deactivate yourself.")
         serializer.save()

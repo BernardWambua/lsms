@@ -2,9 +2,20 @@ import secrets
 import uuid
 from datetime import timedelta
 
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser
+
+# Proficiency and DIF scores all use the same 1 (low) to 5 (high) scale.
+SCORE_VALIDATORS = [MinValueValidator(1), MaxValueValidator(5)]
+PROFICIENCY_LEVELS = [
+    (1, 'Awareness'),
+    (2, 'Basic'),
+    (3, 'Intermediate'),
+    (4, 'Advanced'),
+    (5, 'Expert'),
+]
 
 class Tenant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -25,6 +36,9 @@ class User(AbstractUser):
         ('employee', 'Employee'),
     ]
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='employee')
+    # The post this person holds. Their department is the job role's org unit, and
+    # the role's skill profile is what their gaps are measured against.
+    job_role = models.ForeignKey('JobRole', null=True, blank=True, on_delete=models.SET_NULL, related_name='holders')
 
 class OrgUnit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -63,15 +77,33 @@ class Skill(models.Model):
         return self.name
 
 class JobRoleSkill(models.Model):
+    """
+    One skill in a job role's profile: the proficiency level the role requires,
+    and how the skill scores on DIF (difficulty, importance, frequency) for this role.
+    DIF scores left blank fall back to the skill's own scores.
+    """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     job_role = models.ForeignKey(JobRole, on_delete=models.CASCADE)
     skill = models.ForeignKey(Skill, on_delete=models.CASCADE)
+    required_level = models.PositiveSmallIntegerField(choices=PROFICIENCY_LEVELS, default=3, validators=SCORE_VALIDATORS)
+    difficulty = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    importance = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    frequency = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+
+    @property
+    def dif(self):
+        """The (difficulty, importance, frequency) scores in effect for this role."""
+        return (
+            self.difficulty if self.difficulty is not None else self.skill.difficulty,
+            self.importance if self.importance is not None else self.skill.impact_if_missing,
+            self.frequency if self.frequency is not None else self.skill.usage_frequency,
+        )
 
     @property
     def importance_score(self):
-        return (self.skill.difficulty + self.skill.usage_frequency + self.skill.impact_if_missing) / 3
-    
+        return sum(self.dif) / 3
+
     def __str__(self):
         return f"{self.job_role.title} - {self.skill.name} (Importance: {self.importance_score})"
 
@@ -80,8 +112,8 @@ class EmployeeSkillRating(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     skill = models.ForeignKey(Skill, on_delete=models.CASCADE)
-    self_rating = models.IntegerField()
-    manager_rating = models.IntegerField(null=True, blank=True)
+    self_rating = models.IntegerField(validators=SCORE_VALIDATORS)
+    manager_rating = models.IntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
     survey_date = models.DateField()
 
 class TrainingCalendar(models.Model):

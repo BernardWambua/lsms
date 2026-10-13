@@ -48,6 +48,16 @@ class JobRoleSkillSerializer(TenantScopedSerializer):
         model = JobRoleSkill
         fields = '__all__'
 
+    def validate(self, attrs):
+        job_role = attrs.get('job_role', getattr(self.instance, 'job_role', None))
+        skill = attrs.get('skill', getattr(self.instance, 'skill', None))
+        duplicates = JobRoleSkill.objects.filter(job_role=job_role, skill=skill)
+        if self.instance is not None:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError({'skill': ['This skill is already in the job role\'s profile.']})
+        return attrs
+
 class EmployeeSkillRatingSerializer(TenantScopedSerializer):
     class Meta:
         model = EmployeeSkillRating
@@ -69,7 +79,7 @@ class UserSerializer(TenantScopedSerializer):
 
     class Meta:
         model = get_user_model()
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'is_active', 'tenant', 'role', 'date_joined', 'last_login', 'password')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'is_active', 'tenant', 'role', 'job_role', 'date_joined', 'last_login', 'password')
         read_only_fields = ('id', 'is_staff', 'is_superuser', 'date_joined', 'last_login')
 
     def validate_password(self, value):

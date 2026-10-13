@@ -491,6 +491,14 @@ class ModelTests(TestCase):
         self.assertEqual(link.importance_score, 4)
         self.assertEqual(str(link), 'Analyst - SQL (Importance: 4.0)')
 
+    def test_role_dif_overrides_the_skills_own_scores(self):
+        tenant = Tenant.objects.create(name='Acme')
+        skill = Skill.objects.create(tenant=tenant, name='SQL', difficulty=2, usage_frequency=4, impact_if_missing=3)
+        job_role = JobRole.objects.create(tenant=tenant, title='Analyst')
+        link = JobRoleSkill.objects.create(tenant=tenant, job_role=job_role, skill=skill, importance=5, frequency=1)
+        self.assertEqual(link.dif, (2, 5, 1))
+        self.assertEqual(link.importance_score, 8 / 3)
+
 
 class TokenTests(TenantTestCase):
     def test_token_endpoints_are_public(self):
@@ -503,3 +511,161 @@ class TokenTests(TenantTestCase):
         access = self.client.post('/api/token/', {'username': 'user_a', 'password': PASSWORD}).json()['access']
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
         self.assertEqual(self.ids(self.client.get('/api/skills/')), {str(self.data_a['skills'].pk)})
+
+
+@FAST_HASHER
+class GapEngineTests(TestCase):
+    """
+    A small ministry: Finance sits under Headquarters, HR is its own top-level unit.
+
+    Accountants need IFMIS at level 4 (DIF 4/5/5 for the role, 4.67) and report
+    writing at level 3 (the skill's own DIF 2/2/3, 2.33). HR officers need report
+    writing at level 4.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name='Ministry')
+        self.other_tenant = Tenant.objects.create(name='County')
+        hq = OrgUnit.objects.create(tenant=self.tenant, name='Headquarters')
+        self.finance = OrgUnit.objects.create(tenant=self.tenant, name='Finance', parent=hq)
+        self.hq = hq
+        hr = OrgUnit.objects.create(tenant=self.tenant, name='Human Resources')
+        accountant = JobRole.objects.create(tenant=self.tenant, title='Accountant', org_unit=self.finance)
+        hr_officer = JobRole.objects.create(tenant=self.tenant, title='HR Officer', org_unit=hr)
+        self.ifmis = Skill.objects.create(tenant=self.tenant, name='IFMIS', difficulty=4, usage_frequency=4, impact_if_missing=3)
+        self.writing = Skill.objects.create(tenant=self.tenant, name='Report writing', type='soft', difficulty=2, usage_frequency=3, impact_if_missing=2)
+        JobRoleSkill.objects.create(tenant=self.tenant, job_role=accountant, skill=self.ifmis, required_level=4, importance=5, frequency=5)
+        JobRoleSkill.objects.create(tenant=self.tenant, job_role=accountant, skill=self.writing, required_level=3)
+        JobRoleSkill.objects.create(tenant=self.tenant, job_role=hr_officer, skill=self.writing, required_level=4)
+
+        def person(username, job_role=None, role='employee'):
+            return User.objects.create_user(username=username, password=PASSWORD, tenant=self.tenant, role=role, job_role=job_role)
+
+        self.alice = person('alice', accountant)
+        self.bob = person('bob', accountant)
+        self.carol = person('carol', hr_officer)
+        self.admin = person('admin', role='admin')
+        self.manager = person('manager', role='manager')
+        self.outsider = User.objects.create_user(username='outsider', password=PASSWORD, tenant=self.other_tenant, role='admin')
+        self.superadmin = User.objects.create_superuser(username='root', password=PASSWORD)
+
+        def rate(user, skill, self_rating, manager_rating=None, when=datetime.date(2026, 6, 1)):
+            EmployeeSkillRating.objects.create(tenant=self.tenant, user=user, skill=skill, self_rating=self_rating, manager_rating=manager_rating, survey_date=when)
+
+        rate(self.alice, self.ifmis, 4, manager_rating=2)
+        rate(self.alice, self.writing, 3)
+        rate(self.bob, self.ifmis, 1, when=datetime.date(2025, 6, 1))
+        rate(self.bob, self.ifmis, 5)
+        rate(self.carol, self.writing, 2)
+        self.client = APIClient()
+
+    def get(self, user, url):
+        self.client.force_authenticate(user=user)
+        return self.client.get(url)
+
+    def ok(self, user, url):
+        response = self.get(user, url)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_person_gaps_prefer_manager_rating_and_weight_by_role_dif(self):
+        data = self.ok(self.alice, '/api/gaps/me/')
+        self.assertEqual((data['job_role']['title'], data['org_unit']['name']), ('Accountant', 'Finance'))
+        ifmis, writing = data['skills']
+        self.assertEqual(ifmis['skill']['name'], 'IFMIS')
+        self.assertEqual((ifmis['required_level'], ifmis['current_level'], ifmis['rating_source'], ifmis['gap']), (4, 2, 'manager', 2))
+        self.assertEqual(ifmis['dif'], {'difficulty': 4, 'importance': 5, 'frequency': 5})
+        self.assertEqual((ifmis['dif_score'], ifmis['priority_score'], ifmis['priority']), (4.67, 9.34, 'high'))
+        self.assertEqual((writing['current_level'], writing['rating_source'], writing['gap'], writing['priority']), (3, 'self', 0, 'none'))
+        # 4.67 x 2 short, out of 4.67 x 4 + 2.33 x 3 required.
+        self.assertEqual(data['gap_score'], 36.4)
+        self.assertEqual((data['skills_required'], data['skills_assessed'], data['skills_with_gap'], data['high_priority_gaps']), (2, 2, 1, 1))
+
+    def test_latest_rating_counts_and_unrated_skills_are_not_assessed(self):
+        data = self.ok(self.bob, f'/api/gaps/people/{self.bob.pk}/')
+        ifmis, writing = data['skills']
+        self.assertEqual((ifmis['current_level'], ifmis['gap']), (5, 0))
+        self.assertEqual((writing['current_level'], writing['gap'], writing['priority']), (None, None, 'not_assessed'))
+        self.assertEqual((data['gap_score'], data['skills_assessed']), (0.0, 1))
+
+    def test_person_without_job_role_has_nothing_to_measure(self):
+        data = self.ok(self.admin, '/api/gaps/me/')
+        self.assertEqual((data['job_role'], data['gap_score'], data['skills']), (None, None, []))
+
+    def test_department_rolls_up_its_staff_and_ranks_training_needs(self):
+        data = self.ok(self.manager, f'/api/gaps/departments/{self.finance.pk}/')
+        self.assertEqual(data['org_unit']['name'], 'Finance')
+        self.assertEqual(data['parent']['name'], 'Headquarters')
+        self.assertEqual((data['staff'], data['staff_assessed'], data['staff_with_gaps']), (2, 2, 1))
+        self.assertEqual(data['assessment_coverage'], 75.0)
+        ifmis = data['skills'][0]
+        self.assertEqual(ifmis['skill']['name'], 'IFMIS')
+        self.assertEqual(
+            (ifmis['staff_requiring'], ifmis['staff_assessed'], ifmis['staff_with_gap'], ifmis['high_priority'], ifmis['average_gap'], ifmis['priority_total']),
+            (2, 2, 1, 1, 1.0, 9.34),
+        )
+        self.assertEqual([p['user']['username'] for p in data['people']], ['alice', 'bob'])
+
+    def test_department_includes_units_below_it(self):
+        data = self.ok(self.admin, f'/api/gaps/departments/{self.hq.pk}/')
+        self.assertEqual(data['staff'], 2)
+        self.assertEqual([(u['org_unit']['name'], u['staff']) for u in data['units']], [('Finance', 2)])
+
+    def test_institution_covers_everyone_with_a_breakdown_by_top_level_unit(self):
+        data = self.ok(self.admin, '/api/gaps/institution/')
+        self.assertEqual(data['tenant']['name'], 'Ministry')
+        self.assertEqual((data['staff'], data['staff_without_role'], data['staff_with_gaps']), (5, 2, 2))
+        self.assertEqual([u['org_unit']['name'] for u in data['units']], ['Headquarters', 'Human Resources'])
+        hr = data['units'][1]
+        self.assertEqual((hr['staff'], hr['gap_score']), (1, 50.0))
+        self.assertEqual([s['skill']['name'] for s in data['skills']], ['IFMIS', 'Report writing'])
+        self.assertEqual(data['people'][0]['user']['username'], 'carol')
+
+    def test_employees_only_see_their_own_gaps(self):
+        self.assertEqual(self.get(self.alice, f'/api/gaps/people/{self.alice.pk}/').status_code, 200)
+        self.assertEqual(self.get(self.alice, f'/api/gaps/people/{self.carol.pk}/').status_code, 403)
+        self.assertEqual(self.get(self.alice, f'/api/gaps/departments/{self.finance.pk}/').status_code, 403)
+        self.assertEqual(self.get(self.alice, '/api/gaps/institution/').status_code, 403)
+        self.assertEqual(self.ok(self.manager, f'/api/gaps/people/{self.carol.pk}/')['user']['username'], 'carol')
+
+    def test_other_tenants_cannot_see_gaps(self):
+        self.assertEqual(self.get(self.outsider, f'/api/gaps/people/{self.alice.pk}/').status_code, 404)
+        self.assertEqual(self.get(self.outsider, f'/api/gaps/departments/{self.finance.pk}/').status_code, 404)
+        self.assertEqual(self.ok(self.outsider, '/api/gaps/institution/')['staff'], 1)
+
+    def test_anonymous_cannot_see_gaps(self):
+        for url in ('/api/gaps/me/', f'/api/gaps/people/{self.alice.pk}/', f'/api/gaps/departments/{self.finance.pk}/', '/api/gaps/institution/'):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 401)
+
+    def test_super_admin_picks_a_tenant(self):
+        self.assertEqual(self.get(self.superadmin, '/api/gaps/institution/').status_code, 400)
+        self.assertEqual(self.get(self.superadmin, '/api/gaps/institution/?tenant=not-a-uuid').status_code, 404)
+        self.assertEqual(self.ok(self.superadmin, f'/api/gaps/institution/?tenant={self.tenant.pk}')['staff'], 5)
+        self.assertEqual(self.ok(self.superadmin, f'/api/gaps/departments/{self.finance.pk}/')['staff'], 2)
+        self.assertEqual(self.get(self.superadmin, '/api/gaps/me/').status_code, 404)
+
+    def test_only_admins_assign_job_roles(self):
+        hr_officer = self.carol.job_role
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.patch(f'/api/users/{self.alice.pk}/', {'job_role': str(hr_officer.pk)})
+        self.assertEqual(response.status_code, 403)
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(f'/api/users/{self.alice.pk}/', {'job_role': str(hr_officer.pk)})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.alice.refresh_from_db()
+        self.assertEqual(self.alice.job_role, hr_officer)
+
+    def test_role_profile_validation(self):
+        self.client.force_authenticate(user=self.admin)
+        accountant = self.alice.job_role
+        duplicate = self.client.post('/api/job-role-skills/', {'job_role': str(accountant.pk), 'skill': str(self.ifmis.pk)})
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertIn('skill', duplicate.json())
+        out_of_range = self.client.post('/api/job-role-skills/', {'job_role': str(self.carol.job_role.pk), 'skill': str(self.ifmis.pk), 'required_level': 6})
+        self.assertEqual(out_of_range.status_code, 400)
+        self.assertIn('required_level', out_of_range.json())
+        created = self.client.post('/api/job-role-skills/', {'job_role': str(self.carol.job_role.pk), 'skill': str(self.ifmis.pk), 'required_level': 2, 'importance': 1})
+        self.assertEqual(created.status_code, 201, created.content)
+        # Difficulty and frequency fall back to the skill's own scores: (4 + 1 + 4) / 3.
+        self.assertEqual(created.json()['importance_score'], 3)

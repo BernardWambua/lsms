@@ -59,8 +59,8 @@ class InvitationAdmin(admin.ModelAdmin):
 class LSMSUserAdmin(UserAdmin):
     list_display = ('username', 'email', 'tenant', 'role', 'is_superuser')
     list_filter = ('tenant', 'role', 'is_superuser')
-    fieldsets = UserAdmin.fieldsets + (('Organisation', {'fields': ('tenant', 'role')}),)
-    add_fieldsets = UserAdmin.add_fieldsets + (('Organisation', {'fields': ('tenant', 'role')}),)
+    fieldsets = UserAdmin.fieldsets + (('Organisation', {'fields': ('tenant', 'role', 'job_role')}),)
+    add_fieldsets = UserAdmin.add_fieldsets + (('Organisation', {'fields': ('tenant', 'role', 'job_role')}),)
 
 
 admin.site.register(JobRole)
