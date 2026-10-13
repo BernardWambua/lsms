@@ -9,7 +9,6 @@ import MenuIcon from '@mui/icons-material/Menu';
 import { useNavigate, useLocation  } from 'react-router-dom';
 
 export default function Navbar() {
-  const [open, setOpen] = React.useState(false);
   const location = useLocation();
   const [username, setUsername] = React.useState(() => sessionStorage.getItem('username') || '');
   const navigate = useNavigate();

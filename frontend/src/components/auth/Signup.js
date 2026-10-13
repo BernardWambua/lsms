@@ -22,7 +22,7 @@ function Signup() {
     setSuccess('');
     try {
       // Create user in default tenant
-      const userRes = await api.post('/users/', {
+      await api.post('/users/', {
         username,
         email,
         password,
@@ -40,7 +40,7 @@ function Signup() {
     e.preventDefault();
     setError('');
     try {
-      const tenantRes = await api.post('/tenants/', { name: newTenantName });
+      await api.post('/tenants/', { name: newTenantName });
       // Optionally, update user to belong to new tenant and become admin
       setTenantCreated(true);
       setSuccess('Tenant created! You now have access to advanced features.');
