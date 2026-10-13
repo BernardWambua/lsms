@@ -9,7 +9,6 @@ import MenuIcon from '@mui/icons-material/Menu';
 import { useNavigate, useLocation  } from 'react-router-dom';
 
 export default function Navbar() {
-  const [open, setOpen] = React.useState(false);
   const location = useLocation();
   const [username, setUsername] = React.useState(() => sessionStorage.getItem('username') || '');
   const navigate = useNavigate();
@@ -48,12 +47,12 @@ export default function Navbar() {
               <Typography variant="body1" sx={{ mr: 2 }}>
                 {username}
               </Typography>
+              <Button color="inherit" onClick={() => navigate('/invitations')}>Invite people</Button>
               <Button color="inherit" onClick={handleLogout}>Logout</Button>
             </>
           ) : (
             <>
               <Button color="inherit" onClick={() => navigate('/login')}>Login</Button>
-              <Button color="inherit" onClick={() => navigate('/signup')}>Sign Up</Button>
             </>
           )}
         </Toolbar>

@@ -36,6 +36,18 @@ npm install
 npm start
 ```
 
+## Accounts and organisations
+
+There is no public signup. People get accounts in one of three ways:
+
+1. **Super admin creates an organisation.** In Django admin (`/admin/`), add a Tenant and an invitation for its first admin in the same form, or `POST /api/tenants/` with `name` and `admin_email`. Super admins (created with `createsuperuser`) don't belong to any tenant.
+2. **Tenant admin invites people.** From the app's "Invite people" page, or `POST /api/invitations/` with `email` and `role`. The invite is emailed and the link is shown on that page; it works once and expires after 7 days.
+3. **Tenant admin adds a user directly** with `POST /api/users/` (username, password, role).
+
+Invite links open `/accept-invite/<token>` in the frontend, where the person picks a username and password. The first person to join an organisation always becomes its admin.
+
+Invitation emails print to the backend console unless SMTP is configured (see `backend/.env.example`).
+
 ## Conventions
 
 - Every model has a UUID primary key and a `tenant` foreign key. API viewsets use `TenantScopedMixin` so each user only sees and creates data for their own tenant.
