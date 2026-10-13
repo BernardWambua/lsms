@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets, permissions, mixins, status
@@ -88,6 +90,59 @@ class OrgUnitViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = OrgUnit.objects.all()
     serializer_class = OrgUnitSerializer
     permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+class OrgStructureView(APIView):
+    """
+    Admin-only: the tenant's org units as a nested tree, each with its job roles,
+    plus the roles that aren't placed in any unit. Super admins pass ?tenant=<id>.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrTenantAdmin]
+
+    def get(self, request):
+        if request.user.is_superuser:
+            tenant_id = request.query_params.get('tenant')
+            if not tenant_id:
+                return Response({'tenant': ['This parameter is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                tenant = get_object_or_404(Tenant, pk=tenant_id)
+            except DjangoValidationError:
+                raise Http404
+        else:
+            tenant = request.user.tenant
+
+        units = list(scope_to_tenant(OrgUnit.objects.order_by('name'), tenant.pk))
+        roles = list(scope_to_tenant(JobRole.objects.order_by('title'), tenant.pk))
+
+        roles_by_unit = {}
+        for role in roles:
+            roles_by_unit.setdefault(role.org_unit_id, []).append(
+                {'id': role.pk, 'title': role.title, 'description': role.description}
+            )
+        children_by_parent = {}
+        for unit in units:
+            children_by_parent.setdefault(unit.parent_id, []).append(unit)
+
+        visited = set()
+
+        def build(unit):
+            visited.add(unit.pk)
+            return {
+                'id': unit.pk,
+                'name': unit.name,
+                'job_roles': roles_by_unit.get(unit.pk, []),
+                'children': [build(child) for child in children_by_parent.get(unit.pk, []) if child.pk not in visited],
+            }
+
+        unit_ids = {unit.pk for unit in units}
+        tree = [build(unit) for unit in units if unit.parent_id is None or unit.parent_id not in unit_ids]
+        # A unit whose parent chain loops back on itself has no root; show it at the top level rather than lose it.
+        tree += [build(unit) for unit in units if unit.pk not in visited]
+
+        return Response({
+            'tenant': {'id': tenant.pk, 'name': tenant.name},
+            'units': tree,
+            'unassigned_job_roles': roles_by_unit.get(None, []),
+        })
 
 # Tenant ViewSet: super admins create and manage organisations; everyone else
 # sees only their own, and its admins can edit it.

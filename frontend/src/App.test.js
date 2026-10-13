@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import api from './api';
 import App from './App';
 
@@ -72,4 +72,39 @@ test('employees see org units read-only', async () => {
   expect(await screen.findByText('Engineering')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /add org unit/i })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: 'People' })).not.toBeInTheDocument();
+});
+
+const STRUCTURE = {
+  tenant: { id: 't1', name: 'Acme' },
+  units: [{
+    id: 'o1', name: 'Engineering', job_roles: [{ id: 'r1', title: 'CTO', description: '' }],
+    children: [{ id: 'o2', name: 'Platform', job_roles: [{ id: 'r2', title: 'SRE', description: 'Keeps things up' }], children: [] }],
+  }],
+  unassigned_job_roles: [{ id: 'r3', title: 'Floating role', description: '' }],
+};
+
+test('tenant admins see the org structure as a tree and can switch to an org chart', async () => {
+  window.history.pushState({}, '', '/org-structure');
+  loggedInAs({ id: 'u1', username: 'ada', is_superuser: false, tenant: 't1', role: 'admin' }, { '/org-structure/': STRUCTURE });
+  render(<App />);
+  const tree = await screen.findByRole('list', { name: 'Org structure tree' });
+  expect(within(tree).getByText('SRE')).toBeInTheDocument();
+  expect(screen.getByText('Floating role')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }));
+  await waitFor(() => expect(within(tree).queryByText('Platform')).not.toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Org chart view' }));
+  const chart = screen.getByLabelText('Org chart');
+  expect(within(chart).getByText('Platform')).toBeInTheDocument();
+  expect(within(chart).getByText('CTO')).toBeInTheDocument();
+  expect(window.location.search).toBe('?view=chart');
+});
+
+test('employees cannot open the org structure page', async () => {
+  window.history.pushState({}, '', '/org-structure');
+  loggedInAs({ id: 'u2', username: 'bob', is_superuser: false, tenant: 't1', role: 'employee' });
+  render(<App />);
+  expect(await screen.findByText(/don't have access/i)).toBeInTheDocument();
+  expect(api.get).not.toHaveBeenCalledWith('/org-structure/');
 });

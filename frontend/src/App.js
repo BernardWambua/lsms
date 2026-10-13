@@ -12,6 +12,7 @@ import SuperAdminDashboard from "./components/superadmin/SuperAdminDashboard";
 import TenantDetail from "./components/superadmin/TenantDetail";
 import AdminDashboard from "./components/admin/AdminDashboard";
 import PeoplePage from "./components/admin/PeoplePage";
+import OrgStructurePage from "./components/admin/OrgStructurePage";
 import ResourcePage from "./components/common/ResourcePage";
 import { JOB_ROLES, ORG_UNITS, SKILLS } from "./components/structure/resources";
 
@@ -57,6 +58,7 @@ function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/accept-invite/:token" element={<AcceptInvite />} />
               <Route path="/tenants/:id" element={<RequireRole roles={['superadmin']}><TenantDetail /></RequireRole>} />
+              <Route path="/org-structure" element={<RequireRole roles={['admin']}><OrgStructurePage /></RequireRole>} />
               <Route path="/people" element={<RequireRole roles={['admin']}><PeoplePage /></RequireRole>} />
               <Route path="/org-units" element={<StructurePage resource={ORG_UNITS} />} />
               <Route path="/job-roles" element={<StructurePage resource={JOB_ROLES} />} />

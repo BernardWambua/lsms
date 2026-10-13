@@ -188,6 +188,53 @@ class StructurePermissionTests(TenantTestCase):
         self.assertEqual(skill.status_code, 201, skill.content)
 
 
+class OrgStructureTests(TenantTestCase):
+    def setUp(self):
+        super().setUp()
+        hq = self.data_a['org-units']
+        self.eng = OrgUnit.objects.create(tenant=self.tenant_a, name='Engineering', parent=hq)
+        self.platform = OrgUnit.objects.create(tenant=self.tenant_a, name='Platform', parent=self.eng)
+        JobRole.objects.create(tenant=self.tenant_a, org_unit=self.platform, title='SRE')
+        JobRole.objects.create(tenant=self.tenant_a, title='Floating role')
+
+    def test_admin_gets_nested_tree_of_own_tenant(self):
+        self.login(self.admin_a)
+        data = self.client.get('/api/org-structure/').json()
+        self.assertEqual(data['tenant']['name'], 'Acme')
+        [hq] = data['units']
+        self.assertEqual((hq['name'], [r['title'] for r in hq['job_roles']]), ('Acme HQ', ['Acme Engineer']))
+        [eng] = hq['children']
+        [platform] = eng['children']
+        self.assertEqual((eng['name'], platform['name'], platform['job_roles'][0]['title']), ('Engineering', 'Platform', 'SRE'))
+        self.assertEqual([r['title'] for r in data['unassigned_job_roles']], ['Floating role'])
+        self.assertNotIn('Globex', str(data))
+
+    def test_non_admins_are_refused(self):
+        self.login(self.user_a)
+        self.assertEqual(self.client.get('/api/org-structure/').status_code, 403)
+        self.assertEqual(APIClient().get('/api/org-structure/').status_code, 401)
+
+    def test_admin_cannot_view_another_tenant(self):
+        self.login(self.admin_a)
+        data = self.client.get(f'/api/org-structure/?tenant={self.tenant_b.pk}').json()
+        self.assertEqual(data['tenant']['name'], 'Acme')
+
+    def test_super_admin_picks_a_tenant(self):
+        self.login(User.objects.create_superuser(username='root', password=PASSWORD, email='root@example.com'))
+        self.assertEqual(self.client.get('/api/org-structure/').status_code, 400)
+        self.assertEqual(self.client.get('/api/org-structure/?tenant=not-a-uuid').status_code, 404)
+        data = self.client.get(f'/api/org-structure/?tenant={self.tenant_b.pk}').json()
+        self.assertEqual([u['name'] for u in data['units']], ['Globex HQ'])
+
+    def test_parent_cycle_does_not_hide_units(self):
+        loop_a = OrgUnit.objects.create(tenant=self.tenant_a, name='Loop A')
+        loop_b = OrgUnit.objects.create(tenant=self.tenant_a, name='Loop B', parent=loop_a)
+        OrgUnit.objects.filter(pk=loop_a.pk).update(parent=loop_b)
+        self.login(self.admin_a)
+        names = [u['name'] for u in self.client.get('/api/org-structure/').json()['units']]
+        self.assertIn('Loop A', names)
+
+
 class TenantEndpointTests(TenantTestCase):
     def setUp(self):
         super().setUp()

@@ -12,6 +12,7 @@ const LINKS = {
   superadmin: [{ to: '/', label: 'Organisations' }],
   admin: [
     { to: '/', label: 'Dashboard' },
+    { to: '/org-structure', label: 'Org structure' },
     { to: '/org-units', label: 'Org units' },
     { to: '/job-roles', label: 'Job roles' },
     { to: '/skills', label: 'Skills' },

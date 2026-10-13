@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView
+from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView
 
 router = DefaultRouter()
 router.register(r'skills', SkillViewSet)
@@ -19,6 +19,7 @@ router.register(r'users', UserViewSet)
 router.register(r'invitations', InvitationViewSet)
 
 urlpatterns = [
+    path('org-structure/', OrgStructureView.as_view(), name='org_structure'),
     path('invitations/accept/<str:token>/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('', include(router.urls)),
     path('token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
