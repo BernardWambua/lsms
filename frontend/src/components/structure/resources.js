@@ -20,7 +20,7 @@ export const ORG_UNITS = {
 
 export const JOB_ROLES = {
   title: 'Job roles',
-  description: 'Positions in the organisation and the unit they belong to.',
+  description: 'Positions in the organisation and the unit they belong to. Open a role to set the skills it requires.',
   endpoint: '/job-roles/',
   itemName: 'job role',
   fields: [
@@ -37,7 +37,7 @@ export const JOB_ROLES = {
 
 export const SKILLS = {
   title: 'Skills',
-  description: 'The skills your roles need. Scores feed each skill\'s importance.',
+  description: "The skills your roles need. A skill's scores are the default DIF (difficulty, importance, frequency) for every role that requires it.",
   endpoint: '/skills/',
   itemName: 'skill',
   fields: [
@@ -48,14 +48,29 @@ export const SKILLS = {
     },
     { name: 'description', label: 'Description', type: 'multiline' },
     { name: 'difficulty', label: 'Difficulty', type: 'number', required: true, min: 1, max: 5, default: 3, help: SCORE_HELP },
-    { name: 'usage_frequency', label: 'Usage frequency', type: 'number', required: true, min: 1, max: 5, default: 3, help: SCORE_HELP },
-    { name: 'impact_if_missing', label: 'Impact if missing', type: 'number', required: true, min: 1, max: 5, default: 3, help: SCORE_HELP },
+    { name: 'usage_frequency', label: 'Frequency of use', type: 'number', required: true, min: 1, max: 5, default: 3, help: SCORE_HELP },
+    { name: 'impact_if_missing', label: 'Importance (impact if missing)', type: 'number', required: true, min: 1, max: 5, default: 3, help: SCORE_HELP },
   ],
   columns: [
     { field: 'name', label: 'Name' },
     { field: 'type', label: 'Type' },
     { field: 'difficulty', label: 'Difficulty' },
-    { field: 'usage_frequency', label: 'Usage' },
-    { field: 'impact_if_missing', label: 'Impact if missing' },
+    { field: 'impact_if_missing', label: 'Importance' },
+    { field: 'usage_frequency', label: 'Frequency' },
+  ],
+};
+
+export const QUESTIONNAIRES = {
+  title: 'Questionnaires',
+  description: 'Skill assessments for your staff. Rating questions linked to a skill record each person\'s self rating.',
+  endpoint: '/questionnaires/',
+  itemName: 'questionnaire',
+  fields: [
+    { name: 'title', label: 'Title', required: true },
+    { name: 'org_unit', label: 'For org unit', type: 'select', optionsFrom: '/org-units/', help: 'Leave blank for everyone.' },
+  ],
+  columns: [
+    { field: 'title', label: 'Title' },
+    { field: 'org_unit', label: 'For org unit' },
   ],
 };

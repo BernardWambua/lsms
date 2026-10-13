@@ -131,7 +131,7 @@ class TenantIsolationTests(TenantTestCase):
         self.assertIn('skill', response.json())
 
     def test_cannot_add_question_to_another_tenants_questionnaire(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         response = self.client.post('/api/questions/', {
             'questionnaire': str(self.data_b['questionnaires'].pk),
             'text': 'Injected?',
@@ -140,7 +140,7 @@ class TenantIsolationTests(TenantTestCase):
         self.assertFalse(Question.objects.filter(text='Injected?').exists())
 
     def test_cannot_add_choice_to_another_tenants_question(self):
-        self.login(self.user_a)
+        self.login(self.admin_a)
         response = self.client.post('/api/question-choices/', {
             'question': str(self.data_b['questions'].pk),
             'text': 'Injected',
@@ -669,3 +669,80 @@ class GapEngineTests(TestCase):
         self.assertEqual(created.status_code, 201, created.content)
         # Difficulty and frequency fall back to the skill's own scores: (4 + 1 + 4) / 3.
         self.assertEqual(created.json()['importance_score'], 3)
+
+
+class QuestionnaireAndRatingTests(TenantTestCase):
+    def setUp(self):
+        super().setUp()
+        self.manager_a = User.objects.create_user(username='manager_a', password=PASSWORD, tenant=self.tenant_a, role='manager')
+        self.skill = self.data_a['skills']
+        self.questionnaire = self.data_a['questionnaires']
+        self.question = self.data_a['questions']
+
+    def test_only_admins_write_questionnaires(self):
+        self.login(self.user_a)
+        self.assertEqual(self.client.get('/api/questionnaires/').status_code, 200)
+        self.assertEqual(self.client.post('/api/questionnaires/', {'title': 'Mine'}).status_code, 403)
+        self.assertEqual(self.client.post('/api/questions/', {'questionnaire': str(self.questionnaire.pk), 'text': 'Q?'}).status_code, 403)
+        self.login(self.admin_a)
+        response = self.client.post('/api/questionnaires/', {'title': 'Annual TNA'})
+        self.assertEqual(response.status_code, 201, response.content)
+        response = self.client.post('/api/questions/', {'questionnaire': response.json()['id'], 'text': 'Rate your Python', 'skill': str(self.skill.pk)})
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_lists_filter_by_query_parameters(self):
+        other = Questionnaire.objects.create(tenant=self.tenant_a, title='Other')
+        Question.objects.create(questionnaire=other, text='Elsewhere?')
+        self.login(self.user_a)
+        self.assertEqual(self.ids(self.client.get('/api/questions/', {'questionnaire': str(self.questionnaire.pk)})), {str(self.question.pk)})
+        self.assertEqual(self.ids(self.client.get('/api/questions/', {'questionnaire': 'not-a-uuid'})), set())
+        role = self.data_a['job-roles']
+        self.assertEqual(self.ids(self.client.get('/api/job-role-skills/', {'job_role': str(role.pk)})), {str(self.data_a['job-role-skills'].pk)})
+
+    def test_rating_answer_linked_to_a_skill_records_a_self_rating(self):
+        self.login(self.user_a)
+        response = self.client.post('/api/question-responses/', {'question': str(self.question.pk), 'response_rating': 2})
+        self.assertEqual(response.status_code, 201, response.content)
+        today = timezone.localdate()
+        rating = EmployeeSkillRating.objects.get(user=self.user_a, skill=self.skill, survey_date=today)
+        self.assertEqual(rating.self_rating, 2)
+        # Answering again the same day updates that rating rather than adding another.
+        self.client.post('/api/question-responses/', {'question': str(self.question.pk), 'response_rating': 4})
+        rating.refresh_from_db()
+        self.assertEqual(rating.self_rating, 4)
+        self.assertEqual(EmployeeSkillRating.objects.filter(user=self.user_a, survey_date=today).count(), 1)
+
+    def test_rating_answers_must_be_1_to_5(self):
+        self.login(self.user_a)
+        self.assertEqual(self.client.post('/api/question-responses/', {'question': str(self.question.pk), 'response_rating': 9}).status_code, 400)
+        self.assertEqual(self.client.post('/api/question-responses/', {'question': str(self.question.pk)}).status_code, 400)
+
+    def test_employees_only_see_their_own_answers_and_ratings(self):
+        EmployeeSkillRating.objects.create(tenant=self.tenant_a, user=self.admin_a, skill=self.skill, self_rating=5, survey_date=datetime.date(2026, 1, 1))
+        QuestionResponse.objects.create(question=self.question, user=self.admin_a, response_rating=5)
+        self.login(self.user_a)
+        self.assertEqual(self.ids(self.client.get('/api/ratings/')), {str(self.data_a['ratings'].pk)})
+        self.assertEqual(self.ids(self.client.get('/api/question-responses/')), {str(self.data_a['question-responses'].pk)})
+        self.login(self.manager_a)
+        self.assertEqual(len(self.ids(self.client.get('/api/ratings/'))), 2)
+
+    def test_people_rate_themselves_but_not_their_manager_rating(self):
+        self.login(self.user_a)
+        response = self.client.post('/api/ratings/', {'skill': str(self.skill.pk), 'user': str(self.admin_a.pk), 'self_rating': 3, 'survey_date': '2026-03-01'})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(EmployeeSkillRating.objects.get(pk=response.json()['id']).user, self.user_a)
+        response = self.client.post('/api/ratings/', {'skill': str(self.skill.pk), 'self_rating': 3, 'manager_rating': 5, 'survey_date': '2026-03-01'})
+        self.assertEqual(response.status_code, 403)
+        rating = self.data_a['ratings']
+        self.assertEqual(self.client.patch(f'/api/ratings/{rating.pk}/', {'manager_rating': 5}).status_code, 403)
+        self.assertEqual(self.client.patch(f'/api/ratings/{rating.pk}/', {'self_rating': 4}).status_code, 200)
+
+    def test_managers_add_manager_ratings_to_others(self):
+        rating = self.data_a['ratings']
+        self.login(self.manager_a)
+        self.assertEqual(self.client.patch(f'/api/ratings/{rating.pk}/', {'self_rating': 1}).status_code, 403)
+        response = self.client.patch(f'/api/ratings/{rating.pk}/', {'manager_rating': 2})
+        self.assertEqual(response.status_code, 200, response.content)
+        rating.refresh_from_db()
+        self.assertEqual((rating.self_rating, rating.manager_rating), (3, 2))
+        self.assertEqual(self.client.delete(f'/api/ratings/{rating.pk}/').status_code, 403)

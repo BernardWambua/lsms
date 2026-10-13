@@ -37,6 +37,21 @@ def can_manage_users(user):
     return user.is_superuser or is_tenant_admin(user)
 
 
+class FilterByParamsMixin:
+    """Narrows a list by exact-match query parameters, e.g. ?job_role=<id>, for the names in ``filter_params``."""
+    filter_params = ()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action != 'list':
+            return queryset
+        filters = {name: self.request.query_params[name] for name in self.filter_params if self.request.query_params.get(name)}
+        try:
+            return queryset.filter(**filters)
+        except (DjangoValidationError, ValueError):
+            return queryset.none()
+
+
 class TenantScopedMixin:
     """
     Limits every request to rows belonging to the requesting user's tenant.
@@ -72,15 +87,47 @@ class JobRoleViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     serializer_class = JobRoleSerializer
     permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
 
-class JobRoleSkillViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = JobRoleSkill.objects.all()
+class JobRoleSkillViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    queryset = JobRoleSkill.objects.order_by('skill__name')
     serializer_class = JobRoleSkillSerializer
     permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    filter_params = ('job_role', 'skill')
 
-class EmployeeSkillRatingViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = EmployeeSkillRating.objects.all()
+class EmployeeSkillRatingViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    """
+    Skill ratings. People record their own self ratings; admins and managers add
+    the manager rating to someone else's. Nobody rates their own manager rating,
+    and employees only see their own ratings.
+    """
+    queryset = EmployeeSkillRating.objects.order_by('-survey_date')
     serializer_class = EmployeeSkillRatingSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_params = ('user', 'skill')
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not can_view_others_gaps(self.request.user):
+            queryset = queryset.filter(user=self.request.user)
+        return queryset
+
+    def perform_create(self, serializer):
+        if serializer.validated_data.get('manager_rating') is not None:
+            raise PermissionDenied("You can't give yourself a manager rating.")
+        serializer.save(tenant=self.request.user.tenant, user=self.request.user)
+
+    def perform_update(self, serializer):
+        rating, data = serializer.instance, serializer.validated_data
+        if rating.user_id == self.request.user.pk:
+            if 'manager_rating' in data and data['manager_rating'] != rating.manager_rating:
+                raise PermissionDenied("You can't give yourself a manager rating.")
+        elif set(data) - {'manager_rating'}:
+            raise PermissionDenied("You can only add a manager rating to someone else's rating.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.user_id != self.request.user.pk and not is_tenant_admin(self.request.user):
+            raise PermissionDenied("You can only delete your own ratings.")
+        instance.delete()
 
 class TrainingCalendarViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = TrainingCalendar.objects.all()
@@ -299,25 +346,28 @@ class AcceptInvitationView(APIView):
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 # Questionnaire ViewSet
+# Questionnaires, their questions and choices: everyone in the tenant can read them, admins write them.
 class QuestionnaireViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = Questionnaire.objects.all()
+    queryset = Questionnaire.objects.order_by('-created_at')
     serializer_class = QuestionnaireSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
 
 # Question ViewSet (tenant comes from the questionnaire)
-class QuestionViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = Question.objects.all()
+class QuestionViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    queryset = Question.objects.order_by('text')
     serializer_class = QuestionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    filter_params = ('questionnaire',)
 
     def perform_create(self, serializer):
         serializer.save()
 
 # QuestionChoice ViewSet (tenant comes from the question's questionnaire)
-class QuestionChoiceViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = QuestionChoice.objects.all()
+class QuestionChoiceViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    queryset = QuestionChoice.objects.order_by('id')
     serializer_class = QuestionChoiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    filter_params = ('question', 'question__questionnaire')
 
     def perform_create(self, serializer):
         serializer.save()
@@ -367,10 +417,43 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
         instance.delete()
 
 # QuestionResponse ViewSet (tenant comes from the question's questionnaire)
-class QuestionResponseViewSet(TenantScopedMixin, viewsets.ModelViewSet):
-    queryset = QuestionResponse.objects.all()
+# Answers to a rating question that is linked to a skill also record the person's
+# self rating for that skill, so questionnaires feed the gap engine.
+class QuestionResponseViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    queryset = QuestionResponse.objects.order_by('-submitted_at')
     serializer_class = QuestionResponseSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_params = ('question', 'question__questionnaire', 'user')
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not can_view_others_gaps(self.request.user):
+            queryset = queryset.filter(user=self.request.user)
+        return queryset
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        response = serializer.save(user=self.request.user)
+        question = response.question
+        if question.question_type == 'rating' and question.skill_id and response.response_rating is not None:
+            record_self_rating(self.request.user, question.skill, response.response_rating)
+
+    def perform_update(self, serializer):
+        if serializer.instance.user_id != self.request.user.pk:
+            raise PermissionDenied('You can only change your own answers.')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.user_id != self.request.user.pk and not is_tenant_admin(self.request.user):
+            raise PermissionDenied('You can only delete your own answers.')
+        instance.delete()
+
+
+def record_self_rating(user, skill, level):
+    """Records today's self rating for ``skill``, updating today's rating if there is one so each day has one rating."""
+    today = timezone.localdate()
+    rating = EmployeeSkillRating.objects.filter(user=user, skill=skill, survey_date=today).first()
+    if rating:
+        rating.self_rating = level
+        rating.save(update_fields=['self_rating'])
+        return rating
+    return EmployeeSkillRating.objects.create(tenant=user.tenant, user=user, skill=skill, self_rating=level, survey_date=today)

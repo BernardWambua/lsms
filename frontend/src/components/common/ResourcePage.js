@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
+import { Link as RouterLink } from 'react-router-dom';
 import {
-  Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, MenuItem, Paper,
+  Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Link, MenuItem, Paper,
   Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
@@ -20,8 +21,9 @@ function emptyForm(fields) {
  * `fields` describe the form: { name, label, type: 'text' | 'multiline' | 'number' | 'select',
  * required, default, choices: [{ value, label }] or optionsFrom: '/endpoint/' + optionLabel }.
  * `columns` describe the table: { field, label } (select fields show their option's label).
+ * `rowLink(item)` makes each row's first column a link to that item's own page.
  */
-export default function ResourcePage({ title, description, endpoint, params, fields, columns, readOnly, itemName }) {
+export default function ResourcePage({ title, description, endpoint, params, fields, columns, readOnly, itemName, rowLink }) {
   const [items, setItems] = useState([]);
   const [options, setOptions] = useState({});
   const [error, setError] = useState('');
@@ -118,7 +120,13 @@ export default function ResourcePage({ title, description, endpoint, params, fie
             )}
             {items.map((item) => (
               <TableRow key={item.id} hover>
-                {columns.map((c) => <TableCell key={c.field}>{display(item, c.field)}</TableCell>)}
+                {columns.map((c, index) => (
+                  <TableCell key={c.field}>
+                    {rowLink && index === 0
+                      ? <Link component={RouterLink} to={rowLink(item)}>{display(item, c.field)}</Link>
+                      : display(item, c.field)}
+                  </TableCell>
+                ))}
                 {!readOnly && (
                   <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                     <Tooltip title="Edit"><IconButton size="small" onClick={() => open(item)}><EditIcon fontSize="small" /></IconButton></Tooltip>
@@ -179,4 +187,5 @@ ResourcePage.propTypes = {
   columns: PropTypes.arrayOf(PropTypes.object).isRequired,
   readOnly: PropTypes.bool,
   itemName: PropTypes.string.isRequired,
+  rowLink: PropTypes.func,
 };

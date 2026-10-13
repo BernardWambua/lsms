@@ -67,6 +67,15 @@ Skills nobody has rated are reported as not assessed and left out of the scores;
 | `GET /api/gaps/departments/<org unit id>/` | admins and managers | the unit and everything below it: staff, coverage, gap score, ranked training needs per skill, people, sub-unit breakdown |
 | `GET /api/gaps/institution/` | admins and managers (super admins add `?tenant=<id>`) | the same for the whole institution, by top-level unit |
 
+### Collecting ratings
+
+- **Self ratings:** people rate themselves on the skills their role requires on **My skills** (`/my-skills`), or by answering a questionnaire. A rating question linked to a skill records the answer as that person's self rating. Each person has at most one rating per skill per day; rating again the same day updates it.
+- **Manager ratings:** admins and managers review people on **Staff ratings** (`/ratings`) and add a manager rating to each person's latest rating. Nobody can give themselves a manager rating, and employees only see their own ratings and answers.
+- **Questionnaires** (`/questionnaires`) are built by admins: questions are rating (1 to 5), multiple choice, true/false or text. Everyone else can read and answer them.
+- **Role profiles:** open a job role (`/job-roles/<id>`) to set the skills it requires, the level, and any role-specific DIF scores. Admins place people in job roles on the People page.
+
+List endpoints accept filters: `job-role-skills?job_role=`, `ratings?user=&skill=`, `questions?questionnaire=`, `question-choices?question=` or `?question__questionnaire=`, `question-responses?question=&question__questionnaire=&user=`.
+
 ## Conventions
 
 - Every model has a UUID primary key and a `tenant` foreign key. API viewsets use `TenantScopedMixin` so each user only sees and creates data for their own tenant.
