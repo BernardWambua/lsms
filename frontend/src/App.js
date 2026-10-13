@@ -4,7 +4,8 @@ import Navbar from "./components/Navbar";
 import { AuthProvider } from "./components/auth/authContext";
 import HomePage from "./components/HomePage";
 import LandingPage from "./components/LandingPage";
-import Signup from "./components/auth/Signup";
+import AcceptInvite from "./components/auth/AcceptInvite";
+import Invitations from "./components/Invitations";
 import Login from "./components/auth/Login";
 
 function App() {
@@ -19,7 +20,8 @@ function App() {
           <main>
             <Routes>
               <Route path="/" element={isLoggedIn ? <LandingPage /> : <HomePage />} />
-              <Route path="/signup" element={<Signup />} />
+              <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+              <Route path="/invitations" element={<Invitations />} />
               <Route path="/login" element={<Login />} />
               <Route path="/org-units" element={<OrgUnitsListing />} />
               {/* Add more routes as needed */}

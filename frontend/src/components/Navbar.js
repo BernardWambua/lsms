@@ -47,12 +47,12 @@ export default function Navbar() {
               <Typography variant="body1" sx={{ mr: 2 }}>
                 {username}
               </Typography>
+              <Button color="inherit" onClick={() => navigate('/invitations')}>Invite people</Button>
               <Button color="inherit" onClick={handleLogout}>Logout</Button>
             </>
           ) : (
             <>
               <Button color="inherit" onClick={() => navigate('/login')}>Login</Button>
-              <Button color="inherit" onClick={() => navigate('/signup')}>Sign Up</Button>
             </>
           )}
         </Toolbar>

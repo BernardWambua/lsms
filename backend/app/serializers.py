@@ -1,6 +1,9 @@
 from rest_framework import serializers
-from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionResponse, QuestionChoice
+from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password as run_password_validators
+from django.core.exceptions import ValidationError as DjangoValidationError
+from .invitations import accept_url
 from .tenancy import scope_to_tenant
 
 
@@ -69,15 +72,9 @@ class UserSerializer(TenantScopedSerializer):
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_active', 'tenant', 'role', 'password')
         read_only_fields = ('id', 'is_staff', 'is_active')
 
-    def get_fields(self):
-        fields = super().get_fields()
-        request = self.context.get('request')
-        signing_up = self.instance is None and not (request and request.user.is_authenticated)
-        if signing_up:
-            # Self-service signup picks the tenant to join and must set a password.
-            fields['tenant'] = serializers.PrimaryKeyRelatedField(queryset=Tenant.objects.all())
-            fields['password'].required = True
-        return fields
+    def validate_password(self, value):
+        run_password_validators(value, self.instance)
+        return value
 
     def create(self, validated_data):
         user = get_user_model().objects.create_user(**validated_data)
@@ -93,9 +90,67 @@ class UserSerializer(TenantScopedSerializer):
 
 # Tenant Serializer
 class TenantSerializer(serializers.ModelSerializer):
+    # Super admins can name the organisation's first admin when creating it.
+    admin_email = serializers.EmailField(write_only=True, required=False)
+
     class Meta:
         model = Tenant
-        fields = '__all__'
+        fields = ('id', 'name', 'industry', 'created_at', 'admin_email')
+
+    def update(self, instance, validated_data):
+        validated_data.pop('admin_email', None)
+        return super().update(instance, validated_data)
+
+
+class InvitationSerializer(serializers.ModelSerializer):
+    status = serializers.SerializerMethodField()
+    accept_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invitation
+        fields = ('id', 'tenant', 'email', 'role', 'invited_by', 'created_at', 'expires_at', 'accepted_at', 'status', 'accept_url')
+        read_only_fields = ('id', 'invited_by', 'created_at', 'expires_at', 'accepted_at')
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        # Only super admins choose the tenant; tenant admins always invite into their own.
+        if not (request and request.user.is_superuser):
+            fields['tenant'] = serializers.PrimaryKeyRelatedField(read_only=True)
+        return fields
+
+    def validate_email(self, value):
+        if get_user_model().objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('A user with this email already exists.')
+        return value
+
+    def get_status(self, obj):
+        if obj.accepted_at:
+            return 'accepted'
+        return 'pending' if obj.is_pending else 'expired'
+
+    def get_accept_url(self, obj):
+        return accept_url(obj) if obj.is_pending else None
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(write_only=True, style={'input_type': 'password'})
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+
+    def validate_username(self, value):
+        if get_user_model().objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError('This username is taken.')
+        return value
+
+    def validate(self, attrs):
+        user = get_user_model()(username=attrs['username'], first_name=attrs.get('first_name', ''), last_name=attrs.get('last_name', ''))
+        try:
+            run_password_validators(attrs["password"], user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)})
+        return attrs
 
 # Questionnaire Serializer
 class QuestionnaireSerializer(TenantScopedSerializer):

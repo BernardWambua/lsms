@@ -1,12 +1,15 @@
 import datetime
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import (
     Tenant, OrgUnit, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar,
-    Questionnaire, Question, QuestionChoice, QuestionResponse,
+    Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation,
 )
 
 User = get_user_model()
@@ -58,7 +61,7 @@ class TenantTestCase(TestCase):
 class AuthenticationRequiredTests(TenantTestCase):
     ENDPOINTS = [
         'skills', 'job-roles', 'job-role-skills', 'ratings', 'training-calendar', 'org-units',
-        'tenants', 'questionnaires', 'questions', 'question-choices', 'question-responses', 'users',
+        'tenants', 'questionnaires', 'questions', 'question-choices', 'question-responses', 'users', 'invitations',
     ]
 
     def test_anonymous_cannot_list_anything(self):
@@ -164,6 +167,10 @@ class TenantIsolationTests(TenantTestCase):
 
 
 class TenantEndpointTests(TenantTestCase):
+    def setUp(self):
+        super().setUp()
+        self.superadmin = User.objects.create_superuser(username='root', password=PASSWORD, email='root@example.com')
+
     def test_employee_cannot_edit_tenant(self):
         self.login(self.user_a)
         response = self.client.patch(f'/api/tenants/{self.tenant_a.pk}/', {'name': 'Renamed'})
@@ -176,37 +183,125 @@ class TenantEndpointTests(TenantTestCase):
         self.tenant_a.refresh_from_db()
         self.assertEqual(self.tenant_a.name, 'Acme Ltd')
 
-    def test_tenants_cannot_be_created_or_deleted_through_the_api(self):
+    def test_tenant_admins_cannot_create_or_delete_tenants(self):
         self.login(self.admin_a)
-        self.assertEqual(self.client.post('/api/tenants/', {'name': 'New'}).status_code, 405)
-        self.assertEqual(self.client.delete(f'/api/tenants/{self.tenant_a.pk}/').status_code, 405)
+        self.assertEqual(self.client.post('/api/tenants/', {'name': 'New'}).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/tenants/{self.tenant_a.pk}/').status_code, 403)
+        self.assertEqual(Tenant.objects.count(), 2)
+
+    def test_super_admin_creates_tenant_and_invites_its_first_admin(self):
+        self.login(self.superadmin)
+        response = self.client.post('/api/tenants/', {'name': 'Initech', 'admin_email': 'boss@initech.com'})
+        self.assertEqual(response.status_code, 201, response.content)
+        tenant = Tenant.objects.get(name='Initech')
+        invitation = Invitation.objects.get(tenant=tenant)
+        self.assertEqual((invitation.email, invitation.role, invitation.invited_by), ('boss@initech.com', 'admin', self.superadmin))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(invitation.token, mail.outbox[0].body)
+
+    def test_super_admin_sees_and_deletes_any_tenant(self):
+        self.login(self.superadmin)
+        self.assertEqual(self.ids(self.client.get('/api/tenants/')), {str(self.tenant_a.pk), str(self.tenant_b.pk)})
+        self.assertEqual(self.client.delete(f'/api/tenants/{self.tenant_b.pk}/').status_code, 204)
+
+
+class InvitationTests(TenantTestCase):
+    def invite(self, user, **payload):
+        self.login(user)
+        return self.client.post('/api/invitations/', {'email': 'new@acme.com', **payload})
+
+    def accept(self, token, **overrides):
+        payload = {'username': 'newbie', 'password': PASSWORD, 'first_name': 'New'}
+        payload.update(overrides)
+        return APIClient().post(f'/api/invitations/accept/{token}/', payload)
+
+    def test_admin_invites_into_own_tenant_and_email_is_sent(self):
+        response = self.invite(self.admin_a, role='manager', tenant=str(self.tenant_b.pk))
+        self.assertEqual(response.status_code, 201, response.content)
+        invitation = Invitation.objects.get(email='new@acme.com')
+        self.assertEqual((invitation.tenant, invitation.role, invitation.invited_by), (self.tenant_a, 'manager', self.admin_a))
+        self.assertEqual(response.json()['status'], 'pending')
+        self.assertIn(invitation.token, response.json()['accept_url'])
+        self.assertEqual(mail.outbox[0].to, ['new@acme.com'])
+
+    def test_employee_cannot_invite(self):
+        self.assertEqual(self.invite(self.user_a).status_code, 403)
+
+    def test_anonymous_cannot_invite(self):
+        self.assertEqual(APIClient().post('/api/invitations/', {'email': 'x@y.com'}).status_code, 401)
+
+    def test_cannot_invite_an_existing_users_email(self):
+        self.user_b.email = 'taken@globex.com'
+        self.user_b.save()
+        self.assertEqual(self.invite(self.admin_a, email='Taken@Globex.com').status_code, 400)
+
+    def test_admins_only_see_own_tenants_invitations(self):
+        Invitation.objects.create(tenant=self.tenant_b, email='b@globex.com')
+        mine = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com')
+        self.login(self.admin_a)
+        self.assertEqual(self.ids(self.client.get('/api/invitations/')), {str(mine.pk)})
+
+    def test_admin_can_revoke_an_invitation(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com')
+        self.login(self.admin_a)
+        self.assertEqual(self.client.delete(f'/api/invitations/{invitation.pk}/').status_code, 204)
+        self.assertEqual(self.accept(invitation.token).status_code, 410)
+
+    def test_preview_shows_who_is_inviting(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com', role='manager')
+        response = APIClient().get(f'/api/invitations/accept/{invitation.token}/')
+        self.assertEqual(response.json(), {'tenant_name': 'Acme', 'email': 'a@acme.com', 'role': 'manager'})
+        self.assertEqual(APIClient().get('/api/invitations/accept/nope/').status_code, 404)
+
+    def test_accepting_creates_user_in_the_invited_tenant(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com', role='manager')
+        response = self.accept(invitation.token, tenant=str(self.tenant_b.pk), role='admin')
+        self.assertEqual(response.status_code, 201, response.content)
+        user = User.objects.get(username='newbie')
+        self.assertEqual((user.tenant, user.role, user.email), (self.tenant_a, 'manager', 'a@acme.com'))
+        token = APIClient().post('/api/token/', {'username': 'newbie', 'password': PASSWORD})
+        self.assertEqual(token.status_code, 200, token.content)
+
+    def test_invitation_works_only_once(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com')
+        self.assertEqual(self.accept(invitation.token).status_code, 201)
+        self.assertEqual(self.accept(invitation.token, username='second').status_code, 410)
+        self.assertEqual(APIClient().get(f'/api/invitations/accept/{invitation.token}/').status_code, 410)
+
+    def test_expired_invitation_is_refused(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com', expires_at=timezone.now() - timedelta(minutes=1))
+        self.assertEqual(self.accept(invitation.token).status_code, 410)
+        self.assertFalse(User.objects.filter(username='newbie').exists())
+
+    def test_weak_password_and_taken_username_are_rejected(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='a@acme.com')
+        self.assertIn('password', self.accept(invitation.token, password='123').json())
+        self.assertIn('username', self.accept(invitation.token, username='USER_A').json())
+        invitation.refresh_from_db()
+        self.assertIsNone(invitation.accepted_at)
+
+    def test_first_user_in_a_tenant_becomes_admin(self):
+        empty = Tenant.objects.create(name='Initech')
+        invitation = Invitation.objects.create(tenant=empty, email='first@initech.com', role='employee')
+        self.assertEqual(self.accept(invitation.token).status_code, 201)
+        self.assertEqual(User.objects.get(username='newbie').role, 'admin')
+
+    def test_new_admin_can_invite_others(self):
+        empty = Tenant.objects.create(name='Initech')
+        invitation = Invitation.objects.create(tenant=empty, email='first@initech.com', role='admin')
+        self.accept(invitation.token)
+        response = self.invite(User.objects.get(username='newbie'), email='second@initech.com')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Invitation.objects.get(email='second@initech.com').tenant, empty)
 
 
 class UserEndpointTests(TenantTestCase):
-    def signup(self, **overrides):
-        payload = {
-            'username': 'newbie', 'email': 'newbie@example.com', 'password': PASSWORD,
-            'tenant': str(self.tenant_a.pk), 'role': 'employee',
-        }
-        payload.update(overrides)
-        return APIClient().post('/api/users/', payload)
-
-    def test_signup_creates_a_user_who_can_log_in(self):
-        response = self.signup()
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertNotIn('password', response.json())
-        token = APIClient().post('/api/token/', {'username': 'newbie', 'password': PASSWORD})
-        self.assertEqual(token.status_code, 200, token.content)
-        self.assertIn('access', token.json())
-
-    def test_signup_cannot_self_assign_admin(self):
-        response = self.signup(role='admin')
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual(User.objects.get(username='newbie').role, 'employee')
-
-    def test_signup_requires_a_password(self):
-        response = self.signup(password='')
-        self.assertEqual(response.status_code, 400)
+    def test_there_is_no_public_signup(self):
+        response = APIClient().post('/api/users/', {
+            'username': 'newbie', 'password': PASSWORD, 'tenant': str(self.tenant_a.pk), 'role': 'admin',
+        })
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(User.objects.filter(username='newbie').exists())
 
     def test_employee_cannot_add_users(self):
         self.login(self.user_a)

@@ -15,13 +15,11 @@ export default function HomePage() {
             The Learning and Skill Management Solution for Modern Organizations
           </Typography>
           <Typography variant="body1" color="text.secondary" sx={{ mt: 2 }}>
-            Track skills, manage training, and empower your team. Sign up to get started or log in if you already have an account.
+            Track skills, manage training, and empower your team. Accounts are by invitation: use the link
+            your organisation's admin sent you, or log in if you already have an account.
           </Typography>
           <Box sx={{ mt: 4 }}>
-            <Button variant="contained" color="primary" sx={{ mr: 2 }} onClick={() => navigate('/signup')}>
-              Sign Up
-            </Button>
-            <Button variant="outlined" color="primary" onClick={() => navigate('/login')}>
+            <Button variant="contained" color="primary" onClick={() => navigate('/login')}>
               Login
             </Button>
           </Box>
