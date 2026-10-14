@@ -14,9 +14,16 @@ import AdminDashboard from "./components/admin/AdminDashboard";
 import PeoplePage from "./components/admin/PeoplePage";
 import OrgStructurePage from "./components/admin/OrgStructurePage";
 import ResourcePage from "./components/common/ResourcePage";
-import { JOB_ROLES, ORG_UNITS, SKILLS } from "./components/structure/resources";
+import RoleProfilePage from "./components/skills/RoleProfilePage";
+import QuestionnairePage from "./components/questionnaires/QuestionnairePage";
+import AnswerQuestionnaire from "./components/questionnaires/AnswerQuestionnaire";
+import MySkillsPage from "./components/ratings/MySkillsPage";
+import TeamRatingsPage from "./components/ratings/TeamRatingsPage";
+import PersonRatingsPage from "./components/ratings/PersonRatingsPage";
+import { JOB_ROLES, ORG_UNITS, QUESTIONNAIRES, SKILLS } from "./components/structure/resources";
 
 const TENANT_ROLES = ['admin', 'manager', 'employee'];
+const REVIEWERS = ['admin', 'manager'];
 
 const theme = createTheme({
   palette: {
@@ -36,13 +43,17 @@ function Home() {
 }
 
 // Org structure pages: everyone in the tenant can look, only admins can change.
-function StructurePage({ resource }) {
+function StructurePage({ resource, rowLink }) {
   const { role } = useAuth();
   return (
     <RequireRole roles={TENANT_ROLES}>
-      <ResourcePage {...resource} readOnly={role !== 'admin'} />
+      <ResourcePage {...resource} readOnly={role !== 'admin'} rowLink={rowLink} />
     </RequireRole>
   );
+}
+
+function tenantPage(element) {
+  return <RequireRole roles={TENANT_ROLES}>{element}</RequireRole>;
 }
 
 function App() {
@@ -61,8 +72,15 @@ function App() {
               <Route path="/org-structure" element={<RequireRole roles={['admin']}><OrgStructurePage /></RequireRole>} />
               <Route path="/people" element={<RequireRole roles={['admin']}><PeoplePage /></RequireRole>} />
               <Route path="/org-units" element={<StructurePage resource={ORG_UNITS} />} />
-              <Route path="/job-roles" element={<StructurePage resource={JOB_ROLES} />} />
+              <Route path="/job-roles" element={<StructurePage resource={JOB_ROLES} rowLink={(role) => `/job-roles/${role.id}`} />} />
+              <Route path="/job-roles/:id" element={tenantPage(<RoleProfilePage />)} />
               <Route path="/skills" element={<StructurePage resource={SKILLS} />} />
+              <Route path="/questionnaires" element={<StructurePage resource={QUESTIONNAIRES} rowLink={(q) => `/questionnaires/${q.id}`} />} />
+              <Route path="/questionnaires/:id" element={tenantPage(<QuestionnairePage />)} />
+              <Route path="/questionnaires/:id/answer" element={tenantPage(<AnswerQuestionnaire />)} />
+              <Route path="/my-skills" element={tenantPage(<MySkillsPage />)} />
+              <Route path="/ratings" element={<RequireRole roles={REVIEWERS}><TeamRatingsPage /></RequireRole>} />
+              <Route path="/ratings/:id" element={<RequireRole roles={REVIEWERS}><PersonRatingsPage /></RequireRole>} />
             </Routes>
           </Container>
         </Router>

@@ -16,16 +16,28 @@ const LINKS = {
     { to: '/org-units', label: 'Org units' },
     { to: '/job-roles', label: 'Job roles' },
     { to: '/skills', label: 'Skills' },
+    { to: '/questionnaires', label: 'Questionnaires' },
+    { to: '/ratings', label: 'Ratings' },
     { to: '/people', label: 'People' },
   ],
   manager: [
     { to: '/', label: 'Home' },
-    { to: '/org-units', label: 'Org units' },
+    { to: '/my-skills', label: 'My skills' },
+    { to: '/questionnaires', label: 'Questionnaires' },
+    { to: '/ratings', label: 'Staff ratings' },
     { to: '/job-roles', label: 'Job roles' },
     { to: '/skills', label: 'Skills' },
+    { to: '/org-units', label: 'Org units' },
+  ],
+  employee: [
+    { to: '/', label: 'Home' },
+    { to: '/my-skills', label: 'My skills' },
+    { to: '/questionnaires', label: 'Questionnaires' },
+    { to: '/job-roles', label: 'Job roles' },
+    { to: '/skills', label: 'Skills' },
+    { to: '/org-units', label: 'Org units' },
   ],
 };
-LINKS.employee = LINKS.manager;
 
 const ROLE_LABELS = { superadmin: 'Super admin', admin: 'Admin', manager: 'Manager', employee: 'Employee' };
 
@@ -50,7 +62,7 @@ export default function Navbar() {
               key={link.to}
               component={NavLink}
               to={link.to}
-              end
+              end={link.to === '/'}
               color="inherit"
               sx={{ '&.active': { bgcolor: 'rgba(255,255,255,0.15)' } }}
             >

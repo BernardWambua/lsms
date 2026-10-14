@@ -2,11 +2,11 @@ import PropTypes from 'prop-types';
 import { Card, CardActionArea, CardContent, Typography } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 
-export default function StatCard({ label, value, to }) {
+export default function StatCard({ label, value, to, suffix }) {
   const navigate = useNavigate();
   const content = (
     <CardContent>
-      <Typography variant="h4" fontWeight="bold">{value ?? '—'}</Typography>
+      <Typography variant="h4" fontWeight="bold">{value === null || value === undefined ? '—' : `${value}${suffix || ''}`}</Typography>
       <Typography color="text.secondary">{label}</Typography>
     </CardContent>
   );
@@ -21,4 +21,5 @@ StatCard.propTypes = {
   label: PropTypes.string.isRequired,
   value: PropTypes.number,
   to: PropTypes.string,
+  suffix: PropTypes.string,
 };

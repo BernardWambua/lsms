@@ -4,14 +4,15 @@ import { Box, Typography, Button, Grid, Paper } from '@mui/material';
 import { useAuth } from './auth/authContext';
 
 const SECTIONS = [
-  { title: 'Org units', text: 'See how your organisation is structured.', to: '/org-units' },
-  { title: 'Job roles', text: 'Browse the roles in each unit.', to: '/job-roles' },
-  { title: 'Skills', text: 'The skills your organisation tracks and why they matter.', to: '/skills' },
+  { title: 'My skills', text: 'What your role requires, your self ratings and your skill gaps.', to: '/my-skills' },
+  { title: 'Questionnaires', text: 'Skill assessments to fill in.', to: '/questionnaires' },
+  { title: 'Staff ratings', text: 'Review your staff\'s self ratings and add your own.', to: '/ratings', roles: ['manager'] },
+  { title: 'Job roles', text: 'Browse the roles in each unit and the skills they require.', to: '/job-roles' },
 ];
 
 // Home for managers and employees.
 export default function LandingPage() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const navigate = useNavigate();
   return (
     <Box>
@@ -24,7 +25,7 @@ export default function LandingPage() {
         </Typography>
       </Box>
       <Grid container spacing={3} justifyContent="center">
-        {SECTIONS.map((section) => (
+        {SECTIONS.filter((section) => !section.roles || section.roles.includes(role)).map((section) => (
           <Grid key={section.to} size={{ xs: 12, md: 4 }}>
             <Paper elevation={2} sx={{ p: 3, height: '100%' }}>
               <Typography variant="h6" fontWeight="bold" gutterBottom>{section.title}</Typography>

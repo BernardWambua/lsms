@@ -62,6 +62,8 @@ class EmployeeSkillRatingSerializer(TenantScopedSerializer):
     class Meta:
         model = EmployeeSkillRating
         fields = '__all__'
+        # Ratings always belong to whoever records them; see EmployeeSkillRatingViewSet.
+        read_only_fields = ('user',)
 
 class TrainingCalendarSerializer(TenantScopedSerializer):
     class Meta:
@@ -192,3 +194,12 @@ class QuestionResponseSerializer(TenantScopedSerializer):
         model = QuestionResponse
         fields = '__all__'
         read_only_fields = ('user',)
+
+    def validate(self, attrs):
+        question = attrs.get('question', getattr(self.instance, 'question', None))
+        rating = attrs.get('response_rating', getattr(self.instance, 'response_rating', None))
+        if question is not None and question.question_type == 'rating' and rating is None:
+            raise serializers.ValidationError({'response_rating': ['Pick a level from 1 to 5.']})
+        if rating is not None and not 1 <= rating <= 5:
+            raise serializers.ValidationError({'response_rating': ['Ratings run from 1 to 5.']})
+        return attrs

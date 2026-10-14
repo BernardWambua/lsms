@@ -11,7 +11,10 @@ const NEXT_STEPS = [
   { label: 'Set up org units', help: 'Departments and teams, nested as deep as you need.', to: '/org-units' },
   { label: 'Define job roles', help: 'The positions people hold, placed in an org unit.', to: '/job-roles' },
   { label: 'List skills', help: 'What your roles need, scored for difficulty, use and impact.', to: '/skills' },
-  { label: 'Invite your team', help: 'Send invitations by email and manage roles.', to: '/people' },
+  { label: 'Build role profiles', help: 'Open a job role to set the skills it requires and at what level.', to: '/job-roles' },
+  { label: 'Invite your team', help: 'Send invitations by email, then place each person in a job role.', to: '/people' },
+  { label: 'Run a questionnaire', help: 'Collect self ratings with rating questions linked to skills.', to: '/questionnaires' },
+  { label: 'Review ratings', help: 'Add manager ratings, which count over self ratings in gap scores.', to: '/ratings' },
 ];
 
 // A tenant admin's home: their organisation at a glance and where to go next.
@@ -56,7 +59,7 @@ export default function AdminDashboard() {
       <Typography variant="h6" mb={2}>Set up your organisation</Typography>
       <Grid container spacing={2}>
         {NEXT_STEPS.map((step) => (
-          <Grid key={step.to} size={{ xs: 12, sm: 6, md: 3 }}>
+          <Grid key={step.label} size={{ xs: 12, sm: 6, md: 3 }}>
             <Card variant="outlined" sx={{ height: '100%' }}>
               <CardContent>
                 <Typography fontWeight="bold">{step.label}</Typography>

@@ -23,12 +23,15 @@ function formatDate(value) {
 export default function UsersTable({ tenantId, canManage }) {
   const { user: me } = useAuth();
   const [users, setUsers] = useState([]);
+  const [jobRoles, setJobRoles] = useState([]);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     try {
-      const { data } = await api.get('/users/', { params: tenantId ? { tenant: tenantId } : undefined });
-      setUsers(data);
+      const params = tenantId ? { tenant: tenantId } : undefined;
+      const [usersRes, rolesRes] = await Promise.all([api.get('/users/', { params }), api.get('/job-roles/', { params })]);
+      setUsers(usersRes.data);
+      setJobRoles(rolesRes.data);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -67,6 +70,7 @@ export default function UsersTable({ tenantId, canManage }) {
               <TableCell>Name</TableCell>
               <TableCell>Email</TableCell>
               <TableCell>Role</TableCell>
+              <TableCell>Job role</TableCell>
               <TableCell>Active</TableCell>
               <TableCell>Joined</TableCell>
               <TableCell>Last login</TableCell>
@@ -75,7 +79,7 @@ export default function UsersTable({ tenantId, canManage }) {
           </TableHead>
           <TableBody>
             {users.length === 0 && (
-              <TableRow><TableCell colSpan={8}><Typography color="text.secondary">No people yet.</Typography></TableCell></TableRow>
+              <TableRow><TableCell colSpan={9}><Typography color="text.secondary">No people yet.</Typography></TableCell></TableRow>
             )}
             {users.map((u) => {
               const editable = canManage && u.id !== me?.id;
@@ -90,6 +94,18 @@ export default function UsersTable({ tenantId, canManage }) {
                         {ROLES.map((r) => <MenuItem key={r.value} value={r.value}>{r.label}</MenuItem>)}
                       </TextField>
                     ) : ROLES.find((r) => r.value === u.role)?.label}
+                  </TableCell>
+                  <TableCell>
+                    {editable ? (
+                      <TextField
+                        select size="small" variant="standard" value={u.job_role || ''}
+                        onChange={(e) => update(u, { job_role: e.target.value || null })}
+                        slotProps={{ select: { displayEmpty: true }, htmlInput: { 'aria-label': `Job role for ${u.username}` } }}
+                      >
+                        <MenuItem value=""><em>None</em></MenuItem>
+                        {jobRoles.map((r) => <MenuItem key={r.id} value={r.id}>{r.title}</MenuItem>)}
+                      </TextField>
+                    ) : jobRoles.find((r) => r.id === u.job_role)?.title || '—'}
                   </TableCell>
                   <TableCell>
                     <Switch size="small" checked={u.is_active} disabled={!editable} onChange={(e) => update(u, { is_active: e.target.checked })} />
