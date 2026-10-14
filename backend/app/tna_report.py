@@ -39,7 +39,7 @@ def _name(user_ref):
     return user_ref['name'] or user_ref['username']
 
 
-def _skill_need(skill):
+def skill_need(skill):
     """A training needs row: one skill across the group, banded by its average priority per officer assessed."""
     mean_priority = skill['priority_total'] / skill['staff_assessed'] if skill['staff_assessed'] else None
     return {
@@ -111,7 +111,7 @@ def build_report(engine, unit=None, period=None):
         })
     occupational.sort(key=lambda r: (r['gap_score'] is None, -(r['gap_score'] or 0), r['job_role']['title']))
 
-    needs = [_skill_need(skill) for skill in group['skills']]
+    needs = [skill_need(skill) for skill in group['skills']]
     summary = {
         'staff': group['staff'],
         'staff_assessed': group['staff_assessed'],
