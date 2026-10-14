@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin
 from django.utils.html import format_html
 
 from .invitations import accept_url, send_invitation
-from .models import Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation
+from .models import Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
 
 
 class InvitationInline(admin.TabularInline):
@@ -73,3 +73,7 @@ admin.site.register(Questionnaire)
 admin.site.register(Question)
 admin.site.register(QuestionResponse)
 admin.site.register(QuestionChoice)
+admin.site.register(TrainingPlan)
+admin.site.register(TrainingProgramme)
+admin.site.register(TrainingNomination)
+admin.site.register(TrainingEvaluation)

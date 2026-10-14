@@ -193,3 +193,142 @@ class Invitation(models.Model):
     @property
     def is_pending(self):
         return self.accepted_at is None and self.expires_at > timezone.now()
+
+
+# Training plan: the costed annual plan built from the TNA gaps, the officers
+# nominated to each programme, their attendance and the training evaluation.
+
+# Quarters of the Kenyan government financial year (July to June).
+QUARTERS = [
+    (1, 'Q1 (Jul-Sep)'),
+    (2, 'Q2 (Oct-Dec)'),
+    (3, 'Q3 (Jan-Mar)'),
+    (4, 'Q4 (Apr-Jun)'),
+]
+PRIORITY_CHOICES = [('high', 'High'), ('medium', 'Medium'), ('low', 'Low')]
+MONEY = {'max_digits': 14, 'decimal_places': 2}
+
+
+class TrainingPlan(models.Model):
+    """One institution's annual training plan for a financial year, costed in KES."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    period = models.CharField(max_length=7, help_text='Financial year, e.g. 2026/27')
+    title = models.CharField(max_length=255, blank=True)
+    # The approved training budget the plan has to fit within.
+    budget = models.DecimalField(null=True, blank=True, **MONEY)
+    # Starting costs for programmes generated from the gaps; HR adjusts each programme afterwards.
+    default_fee = models.DecimalField(default=0, **MONEY)
+    default_allowance_per_day = models.DecimalField(default=0, **MONEY)
+    default_duration_days = models.PositiveSmallIntegerField(default=5)
+    STATUS_CHOICES = [('draft', 'Draft'), ('submitted', 'Submitted'), ('approved', 'Approved')]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_plans_created')
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_plans_approved')
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['tenant', 'period'], name='one_training_plan_per_period')]
+
+    def __str__(self):
+        return self.title or f'Training plan {self.period}'
+
+
+class TrainingProgramme(models.Model):
+    """
+    One course in the plan. Each officer costs the fee plus the daily allowance for
+    every day of the course; the fixed cost (facilitators, venue) is shared.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    plan = models.ForeignKey(TrainingPlan, on_delete=models.CASCADE, related_name='programmes')
+    skill = models.ForeignKey(Skill, null=True, blank=True, on_delete=models.SET_NULL, related_name='training_programmes')
+    title = models.CharField(max_length=255)
+    provider = models.CharField(max_length=255, blank=True)
+    DELIVERY_CHOICES = [
+        ('in_house', 'In-house'),
+        ('local', 'External (local)'),
+        ('foreign', 'External (foreign)'),
+        ('online', 'Online'),
+    ]
+    delivery_mode = models.CharField(max_length=20, choices=DELIVERY_CHOICES, default='in_house')
+    quarter = models.PositiveSmallIntegerField(choices=QUARTERS, default=1)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    venue = models.CharField(max_length=255, blank=True)
+    duration_days = models.PositiveSmallIntegerField(default=5)
+    fee = models.DecimalField(default=0, help_text='Course fee per participant (KES)', **MONEY)
+    allowance_per_day = models.DecimalField(default=0, help_text='Subsistence allowance per participant per day (KES)', **MONEY)
+    fixed_cost = models.DecimalField(default=0, help_text='Facilitation, venue and other shared costs (KES)', **MONEY)
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='medium')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def cost_per_participant(self):
+        return self.fee + self.allowance_per_day * self.duration_days
+
+
+class TrainingNomination(models.Model):
+    """An officer nominated to a programme, with the gap that put them there and whether they attended."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    programme = models.ForeignKey(TrainingProgramme, on_delete=models.CASCADE, related_name='nominations')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='training_nominations')
+    STATUS_CHOICES = [
+        ('proposed', 'Proposed'),
+        ('approved', 'Approved'),
+        ('declined', 'Declined'),
+        ('withdrawn', 'Withdrawn'),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='proposed')
+    SOURCE_CHOICES = [('gap', 'Skill gap'), ('manual', 'Nominated')]
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='manual')
+    # The gap engine's figures when the officer was nominated, so the plan keeps its evidence.
+    required_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    current_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    gap = models.PositiveSmallIntegerField(null=True, blank=True)
+    priority_score = models.FloatField(null=True, blank=True)
+    ATTENDANCE_CHOICES = [
+        ('not_recorded', 'Not recorded'),
+        ('attended', 'Attended'),
+        ('partial', 'Partly attended'),
+        ('absent', 'Absent'),
+    ]
+    attendance = models.CharField(max_length=20, choices=ATTENDANCE_CHOICES, default='not_recorded')
+    days_attended = models.PositiveSmallIntegerField(null=True, blank=True)
+    nominated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_nominations_made')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Nominations that still count towards the plan's participants and cost.
+    ACTIVE = ('proposed', 'approved')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['programme', 'user'], name='one_nomination_per_programme')]
+
+    def __str__(self):
+        return f'{self.user} -> {self.programme}'
+
+
+class TrainingEvaluation(models.Model):
+    """
+    How a nomination's training went, on the Kirkpatrick levels: the participant's
+    reaction (level 1), test scores before and after (level 2), and the supervisor's
+    rating of the skill back on the job (level 3), which becomes their manager rating.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    nomination = models.OneToOneField(TrainingNomination, on_delete=models.CASCADE, related_name='evaluation')
+    reaction_rating = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    relevance_rating = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    participant_comments = models.TextField(blank=True)
+    participant_submitted_at = models.DateTimeField(null=True, blank=True)
+    pre_test_score = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(100)])
+    post_test_score = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(100)])
+    post_training_level = models.PositiveSmallIntegerField(null=True, blank=True, choices=PROFICIENCY_LEVELS, validators=SCORE_VALIDATORS)
+    supervisor_comments = models.TextField(blank=True)
+    supervisor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_evaluations_given')
+    supervisor_submitted_at = models.DateTimeField(null=True, blank=True)

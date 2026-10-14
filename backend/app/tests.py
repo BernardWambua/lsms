@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 
 from .models import (
     Tenant, OrgUnit, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar,
-    Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation,
+    Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingNomination,
 )
 
 User = get_user_model()
@@ -813,3 +813,173 @@ class QuestionnaireAndRatingTests(TenantTestCase):
         rating.refresh_from_db()
         self.assertEqual((rating.self_rating, rating.manager_rating), (3, 2))
         self.assertEqual(self.client.delete(f'/api/ratings/{rating.pk}/').status_code, 403)
+
+
+class TrainingPlanTests(MinistryTestCase):
+    """
+    From the gaps: Alice's IFMIS gap (2 levels, priority 9.34) and Carol's report
+    writing gap (2 levels, 4.66). Each officer costs KES 20,000 in fees plus
+    KES 5,000 a day for 5 days, so KES 45,000.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.plan = TrainingPlan.objects.create(
+            tenant=self.tenant, period='2026/27', budget=80000, default_fee=20000, default_allowance_per_day=5000, default_duration_days=5,
+        )
+
+    def send(self, user, method, url, data=None):
+        self.client.force_authenticate(user=user)
+        return getattr(self.client, method)(url, data, format='json')
+
+    def generate(self):
+        response = self.send(self.admin, 'post', f'/api/training-plans/{self.plan.pk}/generate/')
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def nomination(self, username):
+        return TrainingNomination.objects.get(programme__plan=self.plan, user__username=username)
+
+    def approve_and_attend(self, username, attendance='attended'):
+        nomination = self.nomination(username)
+        response = self.send(self.admin, 'patch', f'/api/training-nominations/{nomination.pk}/', {'status': 'approved', 'attendance': attendance})
+        self.assertEqual(response.status_code, 200, response.content)
+        return nomination
+
+    def test_generates_programmes_and_nominations_from_the_gaps(self):
+        data = self.generate()
+        self.assertEqual(data['created'], {'programmes': 2, 'nominations': 2})
+        # Priority bands match the TNA report's training needs: total priority per officer assessed.
+        self.assertEqual(
+            [(p['title'], p['priority'], p['quarter'], p['participants'], p['cost_per_participant']) for p in data['programmes']],
+            [('IFMIS', 'medium', 2, 1, 45000.0), ('Report writing', 'low', 3, 1, 45000.0)],
+        )
+        alice = self.nomination('alice')
+        self.assertEqual((alice.source, alice.status, alice.required_level, alice.current_level, alice.gap, alice.priority_score),
+                         ('gap', 'proposed', 4, 2, 2, 9.34))
+        self.assertEqual(alice.nominated_by, self.admin)
+
+        # Running it again adds only new gaps: Bob's first report writing rating shows a gap.
+        self.assertEqual(self.generate()['created'], {'programmes': 0, 'nominations': 0})
+        EmployeeSkillRating.objects.create(tenant=self.tenant, user=self.bob, skill=self.writing, self_rating=1, survey_date=datetime.date(2026, 7, 1))
+        self.assertEqual(self.generate()['created'], {'programmes': 0, 'nominations': 1})
+
+    def test_plan_is_costed_by_quarter_department_and_budget(self):
+        self.generate()
+        ifmis = self.plan.programmes.get(skill=self.ifmis)
+        ifmis.fixed_cost = 10000
+        ifmis.save()
+        data = self.ok(self.manager, f'/api/training-plans/{self.plan.pk}/')
+        self.assertEqual(data['summary'], {
+            'programmes': 2, 'participants': 2, 'officers': 2, 'approved_participants': 0,
+            'total_cost': 100000.0, 'budget': 80000.0, 'balance': -20000.0,
+        })
+        self.assertEqual([(q['quarter'], q['cost']) for q in data['by_quarter']], [(1, 0), (2, 55000.0), (3, 45000.0), (4, 0)])
+        self.assertEqual([(d['org_unit']['name'], d['cost']) for d in data['by_department']], [('Finance', 55000.0), ('Human Resources', 45000.0)])
+
+        # Declined nominees drop out of the cost; the fixed cost stays.
+        self.send(self.admin, 'patch', f"/api/training-nominations/{self.nomination('alice').pk}/", {'status': 'declined'})
+        data = self.ok(self.admin, f'/api/training-plans/{self.plan.pk}/')
+        self.assertEqual((data['summary']['participants'], data['summary']['total_cost']), (1, 55000.0))
+        listed = self.ok(self.admin, '/api/training-plans/')
+        self.assertEqual(listed[0]['summary']['total_cost'], 55000.0)
+
+    def test_attendance_and_evaluation_close_the_loop(self):
+        self.generate()
+        alice = self.nomination('alice')
+        url = f'/api/training-nominations/{alice.pk}/evaluation/'
+        self.assertEqual(self.send(self.alice, 'post', url, {'reaction_rating': 5}).status_code, 400)
+
+        self.approve_and_attend('alice')
+        self.assertEqual(self.send(self.alice, 'post', url, {'post_training_level': 5}).status_code, 403)
+        response = self.send(self.alice, 'post', url, {'reaction_rating': 5, 'relevance_rating': 4, 'participant_comments': 'Useful'})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNotNone(response.json()['participant_submitted_at'])
+        self.assertEqual(self.send(self.manager, 'post', url, {'reaction_rating': 1}).status_code, 403)
+
+        response = self.send(self.manager, 'post', url, {'pre_test_score': 40, 'post_test_score': 75, 'post_training_level': 4})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()['reaction_rating'], response.json()['supervisor_name']), (5, 'manager'))
+
+        # The supervisor's rating becomes Alice's manager rating, so the gap engine sees the gap closed.
+        ifmis = self.ok(self.alice, '/api/gaps/me/')['skills'][0]
+        self.assertEqual((ifmis['current_level'], ifmis['rating_source'], ifmis['gap']), (4, 'manager', 0))
+
+        data = self.ok(self.admin, f'/api/training-plans/{self.plan.pk}/')
+        self.assertEqual(data['attendance']['attended'], 1)
+        self.assertEqual(data['attendance']['attendance_rate'], 100.0)
+        self.assertEqual(data['evaluation'], {
+            'participant_responses': 1, 'average_reaction': 5.0, 'average_relevance': 4.0, 'tested': 1,
+            'average_learning_gain': 35.0, 'supervisor_evaluations': 1, 'gaps_closed': 1,
+        })
+
+    def test_who_can_do_what(self):
+        self.generate()
+        plans = '/api/training-plans/'
+        self.assertEqual(self.get(self.alice, plans).status_code, 403)
+        self.assertEqual(len(self.ok(self.manager, plans)), 1)
+        self.assertEqual(self.send(self.manager, 'post', plans, {'period': '2027/28'}).status_code, 403)
+        self.assertEqual(self.send(self.manager, 'post', f'/api/training-plans/{self.plan.pk}/generate/').status_code, 403)
+
+        ifmis = self.plan.programmes.get(skill=self.ifmis)
+        # Managers propose; HR approves.
+        approved = self.send(self.manager, 'post', '/api/training-nominations/', {'programme': str(ifmis.pk), 'user': str(self.bob.pk), 'status': 'approved'})
+        self.assertEqual(approved.status_code, 403)
+        proposed = self.send(self.manager, 'post', '/api/training-nominations/', {'programme': str(ifmis.pk), 'user': str(self.bob.pk)})
+        self.assertEqual(proposed.status_code, 201, proposed.content)
+        self.assertEqual((proposed.json()['source'], proposed.json()['status']), ('manual', 'proposed'))
+        duplicate = self.send(self.admin, 'post', '/api/training-nominations/', {'programme': str(ifmis.pk), 'user': str(self.bob.pk)})
+        self.assertEqual(duplicate.status_code, 400)
+
+        alice = self.nomination('alice')
+        alice_url = f'/api/training-nominations/{alice.pk}/'
+        self.assertEqual(self.send(self.manager, 'patch', alice_url, {'status': 'approved'}).status_code, 403)
+        self.assertEqual(self.send(self.admin, 'patch', alice_url, {'attendance': 'attended'}).status_code, 400)
+        self.assertEqual(self.send(self.admin, 'patch', alice_url, {'status': 'approved'}).status_code, 200)
+        self.assertEqual(self.send(self.manager, 'patch', alice_url, {'attendance': 'partial', 'days_attended': 3}).status_code, 200)
+        self.assertEqual(self.send(self.manager, 'patch', alice_url, {'days_attended': 9}).status_code, 400)
+        self.assertEqual(self.send(self.alice, 'patch', alice_url, {'attendance': 'attended'}).status_code, 403)
+        self.assertEqual(self.send(self.manager, 'delete', alice_url).status_code, 403)
+
+        # Officers only see their own nominations; other tenants see nothing.
+        self.assertEqual([n['officer']['username'] for n in self.ok(self.alice, '/api/training-nominations/')], ['alice'])
+        self.assertEqual(len(self.ok(self.manager, f'/api/training-nominations/?plan={self.plan.pk}')), 3)
+        self.assertEqual(self.get(self.outsider, f'/api/training-plans/{self.plan.pk}/').status_code, 404)
+        self.assertEqual(self.ok(self.outsider, '/api/training-nominations/'), [])
+        foreign = self.send(self.outsider, 'post', '/api/training-programmes/', {'plan': str(self.plan.pk), 'title': 'Sneaky'})
+        self.assertEqual(foreign.status_code, 400)
+
+    def test_period_status_and_approval(self):
+        plans = '/api/training-plans/'
+        self.assertEqual(self.send(self.admin, 'post', plans, {'period': '2026/27'}).status_code, 400)
+        self.assertEqual(self.send(self.admin, 'post', plans, {'period': '2027/29'}).status_code, 400)
+        created = self.send(self.admin, 'post', plans, {'period': '2027/28', 'budget': '1500000'})
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()['created_by'], str(self.admin.pk))
+
+        url = f'{plans}{self.plan.pk}/'
+        approved = self.send(self.admin, 'patch', url, {'status': 'approved'})
+        self.assertEqual((approved.json()['status'], approved.json()['approved_by']), ('approved', str(self.admin.pk)))
+        self.assertEqual(self.send(self.admin, 'post', f'{url}generate/').status_code, 400)
+        self.assertIsNone(self.send(self.admin, 'patch', url, {'status': 'draft'}).json()['approved_at'])
+
+    def test_downloads_pdf_and_excel(self):
+        from io import BytesIO
+        from openpyxl import load_workbook
+
+        self.generate()
+        self.approve_and_attend('alice')
+        pdf = self.get(self.admin, f'/api/training-plans/{self.plan.pk}/export/?download=pdf')
+        self.assertEqual(pdf.status_code, 200)
+        self.assertIn('Training-plan-Ministry-2026-27.pdf', pdf['Content-Disposition'])
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+
+        xlsx = self.get(self.manager, f'/api/training-plans/{self.plan.pk}/export/?download=xlsx')
+        self.assertEqual(xlsx.status_code, 200)
+        workbook = load_workbook(BytesIO(xlsx.content))
+        self.assertEqual(workbook.sheetnames, ['Summary', 'Programmes', 'Nominations'])
+        programmes = list(workbook['Programmes'].values)
+        self.assertEqual((programmes[1][1], programmes[1][-1]), ('IFMIS', 45000))
+        nominations = list(workbook['Nominations'].values)
+        self.assertEqual((nominations[1][1], nominations[1][10], nominations[1][11]), ('alice', 'Approved', 'Attended'))
+        self.assertEqual(self.get(self.admin, f'/api/training-plans/{self.plan.pk}/export/?download=docx').status_code, 400)

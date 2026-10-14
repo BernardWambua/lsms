@@ -5,8 +5,10 @@ import { useAuth } from './auth/authContext';
 
 const SECTIONS = [
   { title: 'My skills', text: 'What your role requires, your self ratings and your skill gaps.', to: '/my-skills' },
+  { title: 'My training', text: 'Training you are nominated to, and evaluating what you attended.', to: '/my-training' },
   { title: 'Questionnaires', text: 'Skill assessments to fill in.', to: '/questionnaires' },
   { title: 'Staff ratings', text: 'Review your staff\'s self ratings and add your own.', to: '/ratings', roles: ['manager'] },
+  { title: 'Training plan', text: 'The costed annual plan: nominate staff and record attendance.', to: '/training-plans', roles: ['manager'] },
   { title: 'Job roles', text: 'Browse the roles in each unit and the skills they require.', to: '/job-roles' },
 ];
 

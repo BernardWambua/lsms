@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView
+from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView, TrainingPlanViewSet, TrainingProgrammeViewSet, TrainingNominationViewSet
 
 router = DefaultRouter()
 router.register(r'skills', SkillViewSet)
@@ -17,6 +17,9 @@ router.register(r'question-choices', QuestionChoiceViewSet)
 router.register(r'question-responses', QuestionResponseViewSet)
 router.register(r'users', UserViewSet)
 router.register(r'invitations', InvitationViewSet)
+router.register(r'training-plans', TrainingPlanViewSet)
+router.register(r'training-programmes', TrainingProgrammeViewSet)
+router.register(r'training-nominations', TrainingNominationViewSet)
 
 urlpatterns = [
     path('gaps/me/', MyGapsView.as_view(), name='my_gaps'),

@@ -5,6 +5,7 @@ import {
 import DownloadIcon from '@mui/icons-material/Download';
 import api from '../../api';
 import { errorMessage } from '../../utils/errors';
+import { blobErrorMessage, downloadFile } from '../../utils/download';
 import { levelLabel } from '../../utils/levels';
 import PriorityChip from '../common/PriorityChip';
 import StatCard from '../common/StatCard';
@@ -21,19 +22,6 @@ function dash(value) {
 
 function name(user) {
   return user.name || user.username;
-}
-
-// File downloads come back as blobs, so errors do too.
-async function blobErrorMessage(err) {
-  const data = err?.response?.data;
-  if (data instanceof Blob) {
-    try {
-      return errorMessage({ response: { data: JSON.parse(await data.text()) } });
-    } catch {
-      return 'The download failed.';
-    }
-  }
-  return errorMessage(err);
 }
 
 function Section({ number, title, intro, columns, rows, empty = 'Nothing to report.' }) {
@@ -92,15 +80,9 @@ export default function TNAReportPage() {
     setDownloading(format);
     setError('');
     try {
-      const { data } = await api.get('/reports/tna/', { params: { ...params, download: format }, responseType: 'blob' });
       const scope = report.scope.org_unit?.name || report.institution.name;
       const filename = `TNA ${scope} ${report.period}`.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const url = URL.createObjectURL(data);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${filename}.${format}`;
-      link.click();
-      URL.revokeObjectURL(url);
+      await downloadFile('/reports/tna/', { ...params, download: format }, `${filename}.${format}`);
     } catch (err) {
       setError(await blobErrorMessage(err));
     } finally {

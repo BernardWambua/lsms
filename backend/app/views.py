@@ -10,12 +10,12 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation
-from .serializers import SkillSerializer, JobRoleSerializer, JobRoleSkillSerializer, EmployeeSkillRatingSerializer, TrainingCalendarSerializer, OrgUnitSerializer, TenantSerializer, QuestionnaireSerializer, QuestionSerializer, QuestionChoiceSerializer, QuestionResponseSerializer, UserSerializer, InvitationSerializer, AcceptInvitationSerializer
+from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
+from .serializers import SkillSerializer, JobRoleSerializer, JobRoleSkillSerializer, EmployeeSkillRatingSerializer, TrainingCalendarSerializer, OrgUnitSerializer, TenantSerializer, QuestionnaireSerializer, QuestionSerializer, QuestionChoiceSerializer, QuestionResponseSerializer, UserSerializer, InvitationSerializer, AcceptInvitationSerializer, TrainingPlanSerializer, TrainingProgrammeSerializer, TrainingNominationSerializer, TrainingEvaluationSerializer
 from .invitations import create_invitation, accept_invitation, InvitationUnavailable
 from .tenancy import scope_to_tenant
 from .gaps import GapEngine
-from . import tna_report
+from . import tna_report, training_plan
 
 
 def is_tenant_admin(user):
@@ -499,3 +499,167 @@ def record_self_rating(user, skill, level):
         rating.save(update_fields=['self_rating'])
         return rating
     return EmployeeSkillRating.objects.create(tenant=user.tenant, user=user, skill=skill, self_rating=level, survey_date=today)
+
+
+# Training plan. HR (tenant admins) builds and costs the plan; managers can see
+# it, nominate their staff and record attendance; officers see their own
+# nominations and evaluate the training they attended.
+
+class IsReviewerReadOnlyOrTenantAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return can_view_others_gaps(request.user)
+        return is_tenant_admin(request.user)
+
+
+FILE_TYPES = {
+    'pdf': (training_plan.render_pdf, 'application/pdf'),
+    'xlsx': (training_plan.render_xlsx, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+}
+
+
+class TrainingPlanViewSet(TenantScopedMixin, viewsets.ModelViewSet):
+    """
+    Annual training plans, one per financial year. The detail view carries the
+    costed plan: totals, cost by quarter, department and priority, attendance and
+    evaluation results, and every programme. ``generate`` builds programmes and
+    nominations from the TNA gaps; ``export`` downloads the plan as PDF or Excel.
+    """
+    queryset = TrainingPlan.objects.select_related('tenant').prefetch_related('programmes__nominations').order_by('-period')
+    serializer_class = TrainingPlanSerializer
+    permission_classes = [permissions.IsAuthenticated, IsReviewerReadOnlyOrTenantAdmin]
+
+    def retrieve(self, request, *args, **kwargs):
+        plan = self.get_object()
+        return Response({**self.get_serializer(plan).data, **training_plan.build_plan(plan)})
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.user.tenant, created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        status_now = serializer.instance.status
+        status_next = serializer.validated_data.get('status', status_now)
+        if status_next == 'approved' and status_now != 'approved':
+            serializer.save(approved_by=self.request.user, approved_at=timezone.now())
+        elif status_next != 'approved' and status_now == 'approved':
+            serializer.save(approved_by=None, approved_at=None)
+        else:
+            serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def generate(self, request, pk=None):
+        plan = self.get_object()
+        if plan.status == 'approved':
+            return Response({'detail': 'This plan is approved. Move it back to draft before adding programmes from the gaps.'}, status=status.HTTP_400_BAD_REQUEST)
+        created = training_plan.generate_from_gaps(plan, GapEngine(plan.tenant), nominated_by=request.user)
+        plan = self.get_queryset().get(pk=plan.pk)
+        return Response({'created': created, **self.get_serializer(plan).data, **training_plan.build_plan(plan)})
+
+    @action(detail=True, methods=['get'])
+    def export(self, request, pk=None):
+        download = request.query_params.get('download')
+        if download not in FILE_TYPES:
+            return Response({'download': ['Use pdf or xlsx.']}, status=status.HTTP_400_BAD_REQUEST)
+        plan = self.get_object()
+        data = training_plan.build_plan(plan)
+        render, content_type = FILE_TYPES[download]
+        response = HttpResponse(render(data, training_plan.participants(plan)), content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{training_plan.filename(data, download)}"'
+        return response
+
+
+class TrainingProgrammeViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    queryset = TrainingProgramme.objects.select_related('skill', 'plan').prefetch_related('nominations').order_by('quarter', 'title')
+    serializer_class = TrainingProgrammeSerializer
+    permission_classes = [permissions.IsAuthenticated, IsReviewerReadOnlyOrTenantAdmin]
+    filter_params = ('plan', 'skill')
+
+
+class TrainingNominationViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
+    """
+    Officers nominated to programmes. Admins nominate, approve and decline; managers
+    can nominate (as proposed) and record attendance; officers see their own.
+    ``evaluation`` records the participant's or the supervisor's evaluation.
+    """
+    queryset = (TrainingNomination.objects
+                .select_related('user__job_role__org_unit', 'programme__plan', 'programme__skill', 'evaluation__supervisor')
+                .order_by('programme__quarter', 'programme__title', '-priority_score', 'user__username'))
+    serializer_class = TrainingNominationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_params = ('programme', 'user', 'status', 'attendance')
+    MANAGER_FIELDS = {'attendance', 'days_attended'}
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action == 'list' and self.request.query_params.get('plan'):
+            try:
+                queryset = queryset.filter(programme__plan=self.request.query_params['plan'])
+            except (DjangoValidationError, ValueError):
+                return queryset.none()
+        if not can_view_others_gaps(self.request.user):
+            queryset = queryset.filter(user=self.request.user)
+        return queryset
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if not can_view_others_gaps(user) or user.is_superuser:
+            raise PermissionDenied('Only HR and managers can nominate officers.')
+        if not is_tenant_admin(user) and serializer.validated_data.get('status', 'proposed') != 'proposed':
+            raise PermissionDenied('Managers propose nominations; HR approves them.')
+        if not is_tenant_admin(user) and set(serializer.validated_data) & self.MANAGER_FIELDS:
+            raise PermissionDenied('Attendance is recorded once a nomination is approved.')
+        serializer.save(tenant=user.tenant, nominated_by=user)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        if is_tenant_admin(user):
+            return serializer.save()
+        if not can_view_others_gaps(user):
+            raise PermissionDenied('Only HR and managers can change nominations.')
+        changed = {field for field, value in serializer.validated_data.items() if value != getattr(serializer.instance, field)}
+        if changed - self.MANAGER_FIELDS:
+            raise PermissionDenied('Managers can record attendance; only HR can approve, decline or change nominations.')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not is_tenant_admin(self.request.user):
+            raise PermissionDenied('Only HR can remove nominations. Withdraw it instead.')
+        instance.delete()
+
+    @action(detail=True, methods=['post'])
+    def evaluation(self, request, pk=None):
+        """
+        The participant records their reaction; a supervisor (an admin or manager
+        other than the participant) records test scores and the skill level seen
+        back on the job, which is saved as the officer's manager rating.
+        """
+        nomination = self.get_object()
+        if request.user.is_superuser:
+            raise PermissionDenied('Super admins can view organisation data but not change it.')
+        if nomination.attendance not in ('attended', 'partial'):
+            return Response({'detail': 'Training can only be evaluated once attendance is recorded.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        evaluation = getattr(nomination, 'evaluation', None) or TrainingEvaluation(tenant=nomination.tenant, nomination=nomination)
+        serializer = TrainingEvaluationSerializer(evaluation, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        fields = set(serializer.validated_data)
+        is_participant = nomination.user_id == request.user.pk
+        participant_fields = fields & set(TrainingEvaluationSerializer.PARTICIPANT_FIELDS)
+        supervisor_fields = fields & set(TrainingEvaluationSerializer.SUPERVISOR_FIELDS)
+        if participant_fields and not is_participant:
+            raise PermissionDenied('Only the participant can give their own reaction to the training.')
+        if supervisor_fields and (is_participant or not can_view_others_gaps(request.user)):
+            raise PermissionDenied("A supervisor evaluates the training's effect on the job; you can't evaluate your own.")
+        if not fields:
+            return Response({'detail': 'Nothing to record.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        extra = {}
+        if participant_fields:
+            extra['participant_submitted_at'] = timezone.now()
+        if supervisor_fields:
+            extra.update(supervisor=request.user, supervisor_submitted_at=timezone.now())
+        evaluation = serializer.save(**extra)
+        level = serializer.validated_data.get('post_training_level')
+        if level is not None and nomination.programme.skill_id:
+            training_plan.record_manager_rating(nomination.user, nomination.programme.skill, level)
+        return Response(TrainingEvaluationSerializer(evaluation).data)

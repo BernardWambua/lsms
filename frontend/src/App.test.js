@@ -292,3 +292,80 @@ test('employees cannot open the TNA report', async () => {
   await waitFor(() => expect(screen.queryByRole('heading', { name: /Training Needs Assessment report/ })).not.toBeInTheDocument());
   expect(api.get).not.toHaveBeenCalledWith('/reports/tna/', expect.anything());
 });
+
+const PLAN = {
+  id: 'p1', period: '2026/27', status: 'draft', budget: '80000.00', title: 'Annual Training Plan 2026/27',
+  institution: { id: 't1', name: 'Ministry' },
+  summary: { programmes: 1, participants: 2, officers: 2, approved_participants: 1, total_cost: 90000, budget: 80000, balance: -10000 },
+  by_quarter: [
+    { quarter: 1, label: 'Q1 (Jul-Sep)', programmes: 1, participants: 2, cost: 90000 },
+    { quarter: 2, label: 'Q2 (Oct-Dec)', programmes: 0, participants: 0, cost: 0 },
+  ],
+  by_priority: [],
+  by_department: [{ org_unit: { id: 'o1', name: 'Finance' }, participants: 2, cost: 90000 }],
+  attendance: { attended: 1, partial: 0, absent: 0, not_recorded: 0, attendance_rate: 100 },
+  evaluation: { participant_responses: 1, average_reaction: 4.5, average_relevance: 4, tested: 0, average_learning_gain: null, supervisor_evaluations: 1, gaps_closed: 1 },
+  programmes: [{
+    id: 'g1', title: 'IFMIS', skill: { id: 's1', name: 'IFMIS' }, provider: 'Kenya School of Government', delivery_mode: 'local', quarter: 1,
+    start_date: null, end_date: null, venue: '', duration_days: 5, fee: 20000, allowance_per_day: 5000, fixed_cost: 0, priority: 'high',
+    participants: 2, cost_per_participant: 45000, total_cost: 90000, approved: 1, attended: 1,
+  }],
+};
+
+test('admins see the costed training plan against its budget', async () => {
+  window.history.pushState({}, '', '/training-plans/p1');
+  loggedInAs({ id: 'u1', username: 'hr', is_superuser: false, tenant: 't1', role: 'admin' }, { '/training-plans/p1/': PLAN });
+  render(<App />);
+  expect(await screen.findByText(/over the approved budget/)).toHaveTextContent('KES 10,000');
+  const programmes = screen.getByRole('table', { name: 'Programmes' });
+  expect(within(programmes).getByText('IFMIS')).toBeInTheDocument();
+  expect(within(programmes).getByText('KES 45,000')).toBeInTheDocument();
+  expect(within(screen.getByRole('table', { name: 'Cost by department' })).getByText('Finance')).toBeInTheDocument();
+  expect(screen.getByText('1 of 1 evaluated')).toBeInTheDocument();
+
+  api.post.mockResolvedValueOnce({ data: { ...PLAN, created: { programmes: 0, nominations: 1 } } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add from latest gaps' }));
+  expect(await screen.findByText(/Added 0 programmes and 1 nomination/)).toBeInTheDocument();
+  expect(api.post).toHaveBeenCalledWith('/training-plans/p1/generate/');
+  expect(screen.getByRole('button', { name: 'Submit for approval' })).toBeInTheDocument();
+});
+
+test('managers can read the plan but not change it', async () => {
+  window.history.pushState({}, '', '/training-plans/p1');
+  loggedInAs({ id: 'u2', username: 'mo', is_superuser: false, tenant: 't1', role: 'manager' }, { '/training-plans/p1/': PLAN });
+  render(<App />);
+  expect(await screen.findByRole('table', { name: 'Programmes' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Add from latest gaps' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Add programme' })).not.toBeInTheDocument();
+});
+
+test('officers evaluate training they attended on My training', async () => {
+  window.history.pushState({}, '', '/my-training');
+  const nomination = {
+    id: 'n1', user: 'u3', status: 'approved', attendance: 'attended', gap: 2, current_level: 2, required_level: 4, evaluation: null,
+    officer: { id: 'u3', username: 'eve', name: 'Eve Achieng' },
+    programme_detail: { id: 'g1', title: 'IFMIS', period: '2026/27', quarter: 1, provider: 'KSG', venue: '', skill: { id: 's1', name: 'IFMIS' } },
+  };
+  sessionStorage.setItem('access_token', 'token');
+  api.get.mockImplementation((url) => {
+    if (url === '/users/me/') return Promise.resolve({ data: { id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' } });
+    if (url === '/training-nominations/') return Promise.resolve({ data: [nomination] });
+    return Promise.resolve({ data: [] });
+  });
+  api.post.mockResolvedValue({ data: {} });
+  render(<App />);
+  const table = await screen.findByRole('table', { name: 'My training' });
+  expect(await within(table).findByText('IFMIS: 2 · Basic → 4 · Advanced')).toBeInTheDocument();
+  fireEvent.click(within(table).getByRole('button', { name: 'Evaluate' }));
+  fireEvent.click(await screen.findByLabelText('5 Stars', { selector: 'input[name="How good was the training overall?"]' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith('/training-nominations/n1/evaluation/', expect.objectContaining({ reaction_rating: 5 })));
+});
+
+test('employees cannot open training plans', async () => {
+  window.history.pushState({}, '', '/training-plans');
+  loggedInAs({ id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' });
+  render(<App />);
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Training plans' })).not.toBeInTheDocument());
+  expect(api.get).not.toHaveBeenCalledWith('/training-plans/');
+});

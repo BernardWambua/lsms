@@ -21,6 +21,10 @@ import MySkillsPage from "./components/ratings/MySkillsPage";
 import TeamRatingsPage from "./components/ratings/TeamRatingsPage";
 import PersonRatingsPage from "./components/ratings/PersonRatingsPage";
 import TNAReportPage from "./components/reports/TNAReportPage";
+import TrainingPlansPage from "./components/training/TrainingPlansPage";
+import TrainingPlanPage from "./components/training/TrainingPlanPage";
+import ProgrammePage from "./components/training/ProgrammePage";
+import MyTrainingPage from "./components/training/MyTrainingPage";
 import { JOB_ROLES, ORG_UNITS, QUESTIONNAIRES, SKILLS } from "./components/structure/resources";
 
 const TENANT_ROLES = ['admin', 'manager', 'employee'];
@@ -83,6 +87,10 @@ function App() {
               <Route path="/ratings" element={<RequireRole roles={REVIEWERS}><TeamRatingsPage /></RequireRole>} />
               <Route path="/ratings/:id" element={<RequireRole roles={REVIEWERS}><PersonRatingsPage /></RequireRole>} />
               <Route path="/reports/tna" element={<RequireRole roles={REVIEWERS}><TNAReportPage /></RequireRole>} />
+              <Route path="/training-plans" element={<RequireRole roles={REVIEWERS}><TrainingPlansPage /></RequireRole>} />
+              <Route path="/training-plans/:id" element={<RequireRole roles={REVIEWERS}><TrainingPlanPage /></RequireRole>} />
+              <Route path="/training-programmes/:id" element={<RequireRole roles={REVIEWERS}><ProgrammePage /></RequireRole>} />
+              <Route path="/my-training" element={tenantPage(<MyTrainingPage />)} />
             </Routes>
           </Container>
         </Router>
