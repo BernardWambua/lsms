@@ -18,6 +18,7 @@ const LINKS = {
     { to: '/skills', label: 'Skills' },
     { to: '/questionnaires', label: 'Questionnaires' },
     { to: '/ratings', label: 'Ratings' },
+    { to: '/reports/tna', label: 'TNA report' },
     { to: '/people', label: 'People' },
   ],
   manager: [
@@ -25,6 +26,7 @@ const LINKS = {
     { to: '/my-skills', label: 'My skills' },
     { to: '/questionnaires', label: 'Questionnaires' },
     { to: '/ratings', label: 'Staff ratings' },
+    { to: '/reports/tna', label: 'TNA report' },
     { to: '/job-roles', label: 'Job roles' },
     { to: '/skills', label: 'Skills' },
     { to: '/org-units', label: 'Org units' },

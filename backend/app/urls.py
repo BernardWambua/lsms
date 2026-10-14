@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView
+from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView
 
 router = DefaultRouter()
 router.register(r'skills', SkillViewSet)
@@ -23,6 +23,7 @@ urlpatterns = [
     path('gaps/people/<uuid:pk>/', PersonGapsView.as_view(), name='person_gaps'),
     path('gaps/departments/<uuid:pk>/', DepartmentGapsView.as_view(), name='department_gaps'),
     path('gaps/institution/', InstitutionGapsView.as_view(), name='institution_gaps'),
+    path('reports/tna/', TNAReportView.as_view(), name='tna_report'),
     path('org-structure/', OrgStructureView.as_view(), name='org_structure'),
     path('invitations/accept/<str:token>/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('', include(router.urls)),

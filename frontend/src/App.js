@@ -20,6 +20,7 @@ import AnswerQuestionnaire from "./components/questionnaires/AnswerQuestionnaire
 import MySkillsPage from "./components/ratings/MySkillsPage";
 import TeamRatingsPage from "./components/ratings/TeamRatingsPage";
 import PersonRatingsPage from "./components/ratings/PersonRatingsPage";
+import TNAReportPage from "./components/reports/TNAReportPage";
 import { JOB_ROLES, ORG_UNITS, QUESTIONNAIRES, SKILLS } from "./components/structure/resources";
 
 const TENANT_ROLES = ['admin', 'manager', 'employee'];
@@ -81,6 +82,7 @@ function App() {
               <Route path="/my-skills" element={tenantPage(<MySkillsPage />)} />
               <Route path="/ratings" element={<RequireRole roles={REVIEWERS}><TeamRatingsPage /></RequireRole>} />
               <Route path="/ratings/:id" element={<RequireRole roles={REVIEWERS}><PersonRatingsPage /></RequireRole>} />
+              <Route path="/reports/tna" element={<RequireRole roles={REVIEWERS}><TNAReportPage /></RequireRole>} />
             </Routes>
           </Container>
         </Router>
