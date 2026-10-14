@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Q
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets, permissions, mixins, status
@@ -15,6 +15,7 @@ from .serializers import SkillSerializer, JobRoleSerializer, JobRoleSkillSeriali
 from .invitations import create_invitation, accept_invitation, InvitationUnavailable
 from .tenancy import scope_to_tenant
 from .gaps import GapEngine
+from . import tna_report
 
 
 def is_tenant_admin(user):
@@ -259,6 +260,47 @@ class InstitutionGapsView(APIView):
         else:
             tenant = request.user.tenant
         return Response(GapEngine(tenant).institution())
+
+
+class TNAReportView(APIView):
+    """
+    The TNA report for the institution, or for one department with ?unit=<id>.
+    ?period=2026/27 labels the financial year (defaults to the current one);
+    ?download=pdf or ?download=xlsx returns the file instead of JSON.
+    Super admins pass ?tenant=<id>.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+    RENDERERS = {
+        'pdf': (tna_report.render_pdf, 'application/pdf'),
+        'xlsx': (tna_report.render_xlsx, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    }
+
+    def get(self, request):
+        params = request.query_params
+        period = params.get('period') or None
+        if period and not tna_report.PERIOD_PATTERN.match(period):
+            return Response({'period': ['Use a financial year such as 2026/27.']}, status=status.HTTP_400_BAD_REQUEST)
+        download = params.get('download')
+        if download and download not in self.RENDERERS:
+            return Response({'download': ['Use pdf or xlsx.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        unit = get_tenant_object(request, OrgUnit, params['unit']) if params.get('unit') else None
+        if unit is not None:
+            tenant = unit.tenant
+        elif request.user.is_superuser:
+            if not params.get('tenant'):
+                return Response({'tenant': ['This parameter is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            tenant = get_tenant_object(request, Tenant, params['tenant'])
+        else:
+            tenant = request.user.tenant
+
+        report = tna_report.build_report(GapEngine(tenant), unit=unit, period=period)
+        if not download:
+            return Response(report)
+        render, content_type = self.RENDERERS[download]
+        response = HttpResponse(render(report), content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{tna_report.filename(report, download)}"'
+        return response
 
 
 # Tenant ViewSet: super admins create and manage organisations; everyone else

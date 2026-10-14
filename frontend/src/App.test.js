@@ -244,3 +244,51 @@ test('admins add questions to a questionnaire', async () => {
     text: 'Rate your Python', question_type: 'rating', skill: null, questionnaire: 'q1',
   }));
 });
+
+const TNA_REPORT = {
+  title: 'Training Needs Assessment Report',
+  institution: { id: 't1', name: 'Acme' },
+  scope: { type: 'institution', org_unit: null },
+  period: '2026/27',
+  generated_at: '2026-10-14T10:00:00+00:00',
+  summary: {
+    staff: 3, staff_assessed: 2, staff_with_gaps: 1, staff_without_role: 1, assessment_coverage: 75,
+    gap_score: 36.4, skills_with_gaps: 1, officers_to_train: 1, high_priority_gaps: 1,
+  },
+  methodology: ['Gap = required level minus current level.'],
+  organisational: [{ org_unit: { id: 'o1', name: 'Finance' }, depth: 0, staff: 2, staff_assessed: 2, staff_with_gaps: 1, assessment_coverage: 75, gap_score: 36.4 }],
+  occupational: [{ job_role: { id: 'r1', title: 'Accountant' }, org_unit: { id: 'o1', name: 'Finance' }, staff: 2, staff_assessed: 2, staff_with_gaps: 1, assessment_coverage: 75, gap_score: 36.4, priority_needs: ['IFMIS'] }],
+  training_needs: [{ skill: { id: 's1', name: 'IFMIS', type: 'technical' }, staff_requiring: 2, staff_assessed: 2, officers_to_train: 1, high_priority: 1, average_gap: 1, priority_total: 9.34, priority: 'medium' }],
+  individuals: [{
+    user: { id: 'u2', username: 'alice', name: 'Alice Wanjiku' }, job_role: { id: 'r1', title: 'Accountant' }, org_unit: { id: 'o1', name: 'Finance' },
+    gap_score: 36.4, skills_required: 2, skills_assessed: 2, skills_with_gap: 1, high_priority_gaps: 1,
+    gaps: [{ skill: { id: 's1', name: 'IFMIS' }, gap: 2 }], not_assessed: [],
+  }],
+  projections: [{
+    skill: { id: 's1', name: 'IFMIS' }, officer: { id: 'u2', username: 'alice', name: 'Alice Wanjiku' }, job_role: { id: 'r1', title: 'Accountant' },
+    org_unit: { id: 'o1', name: 'Finance' }, required_level: 4, current_level: 2, rating_source: 'manager', gap: 2, priority_score: 9.34, priority: 'high',
+  }],
+  recommendations: ['Prioritise training in IFMIS (1 officer) in the training projections for this period.'],
+};
+
+test('managers preview the TNA report and can download it', async () => {
+  window.history.pushState({}, '', '/reports/tna');
+  loggedInAs({ id: 'u1', username: 'mo', is_superuser: false, tenant: 't1', role: 'manager' }, { '/reports/tna/': TNA_REPORT });
+  render(<App />);
+  expect(await screen.findByRole('heading', { name: '1. Executive summary' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Financial year')).toHaveValue('2026/27');
+  const projections = screen.getByRole('table', { name: 'Annex: Training projections' });
+  expect(within(projections).getByText('Alice Wanjiku')).toBeInTheDocument();
+  expect(within(projections).getByText('4 · Advanced')).toBeInTheDocument();
+  expect(screen.getByText(/Prioritise training in IFMIS/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'PDF' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Excel' })).toBeEnabled();
+});
+
+test('employees cannot open the TNA report', async () => {
+  window.history.pushState({}, '', '/reports/tna');
+  loggedInAs({ id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' });
+  render(<App />);
+  await waitFor(() => expect(screen.queryByRole('heading', { name: /Training Needs Assessment report/ })).not.toBeInTheDocument());
+  expect(api.get).not.toHaveBeenCalledWith('/reports/tna/', expect.anything());
+});

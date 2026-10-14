@@ -514,7 +514,7 @@ class TokenTests(TenantTestCase):
 
 
 @FAST_HASHER
-class GapEngineTests(TestCase):
+class MinistryTestCase(TestCase):
     """
     A small ministry: Finance sits under Headquarters, HR is its own top-level unit.
 
@@ -568,6 +568,8 @@ class GapEngineTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()
 
+
+class GapEngineTests(MinistryTestCase):
     def test_person_gaps_prefer_manager_rating_and_weight_by_role_dif(self):
         data = self.ok(self.alice, '/api/gaps/me/')
         self.assertEqual((data['job_role']['title'], data['org_unit']['name']), ('Accountant', 'Finance'))
@@ -669,6 +671,71 @@ class GapEngineTests(TestCase):
         self.assertEqual(created.status_code, 201, created.content)
         # Difficulty and frequency fall back to the skill's own scores: (4 + 1 + 4) / 3.
         self.assertEqual(created.json()['importance_score'], 3)
+
+
+class TNAReportTests(MinistryTestCase):
+    URL = '/api/reports/tna/'
+
+    def test_institution_report_follows_the_tna_structure(self):
+        report = self.ok(self.admin, f'{self.URL}?period=2026/27')
+        self.assertEqual((report['institution']['name'], report['period'], report['scope']['type']), ('Ministry', '2026/27', 'institution'))
+        summary = report['summary']
+        self.assertEqual((summary['staff'], summary['staff_without_role'], summary['officers_to_train'], summary['high_priority_gaps']), (5, 2, 2, 1))
+        self.assertEqual(
+            [(u['org_unit']['name'], u['depth'], u['staff']) for u in report['organisational']],
+            [('Headquarters', 0, 2), ('Finance', 1, 2), ('Human Resources', 0, 1)],
+        )
+        self.assertEqual([r['job_role']['title'] for r in report['occupational']], ['HR Officer', 'Accountant'])
+        self.assertEqual(report['occupational'][1]['priority_needs'], ['IFMIS'])
+        self.assertEqual([(n['skill']['name'], n['officers_to_train']) for n in report['training_needs']], [('IFMIS', 1), ('Report writing', 1)])
+        # Alice's IFMIS gap (priority 9.34) ranks above Carol's report writing gap (2 x 2.33).
+        self.assertEqual(
+            [(p['skill']['name'], p['officer']['username'], p['gap'], p['priority']) for p in report['projections']],
+            [('IFMIS', 'alice', 2, 'high'), ('Report writing', 'carol', 2, 'medium')],
+        )
+        bob = next(p for p in report['individuals'] if p['user']['username'] == 'bob')
+        self.assertEqual((bob['gaps'], bob['not_assessed']), ([], ['Report writing']))
+        self.assertTrue(any('job roles' in line for line in report['recommendations']))
+
+    def test_department_report_covers_its_subtree(self):
+        report = self.ok(self.manager, f'{self.URL}?unit={self.hq.pk}')
+        self.assertEqual((report['scope']['type'], report['scope']['org_unit']['name']), ('department', 'Headquarters'))
+        self.assertEqual(report['summary']['staff'], 2)
+        self.assertEqual([p['officer']['username'] for p in report['projections']], ['alice'])
+
+    def test_period_defaults_to_the_current_financial_year(self):
+        from .tna_report import financial_year
+        self.assertEqual(financial_year(datetime.date(2026, 6, 30)), '2025/26')
+        self.assertEqual(financial_year(datetime.date(2026, 7, 1)), '2026/27')
+        self.assertRegex(self.ok(self.admin, self.URL)['period'], r'^\d{4}/\d{2}$')
+        self.assertEqual(self.get(self.admin, f'{self.URL}?period=next-year').status_code, 400)
+
+    def test_downloads_pdf_and_excel(self):
+        from io import BytesIO
+        from openpyxl import load_workbook
+
+        pdf = self.get(self.admin, f'{self.URL}?period=2026/27&download=pdf')
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf['Content-Type'], 'application/pdf')
+        self.assertIn('TNA-Ministry-2026-27.pdf', pdf['Content-Disposition'])
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+
+        xlsx = self.get(self.admin, f'{self.URL}?unit={self.finance.pk}&period=2026/27&download=xlsx')
+        self.assertEqual(xlsx.status_code, 200)
+        self.assertIn('TNA-Finance-2026-27.xlsx', xlsx['Content-Disposition'])
+        workbook = load_workbook(BytesIO(xlsx.content))
+        self.assertEqual(workbook.sheetnames, ['Summary', 'Departments', 'Job roles', 'Training needs', 'Individuals', 'Training projections'])
+        projections = list(workbook['Training projections'].values)
+        self.assertEqual(projections[1][1:4], ('IFMIS', 'alice', 'alice'))
+        self.assertEqual(self.get(self.admin, f'{self.URL}?download=docx').status_code, 400)
+
+    def test_only_reviewers_in_the_tenant_get_the_report(self):
+        self.assertEqual(self.get(self.alice, self.URL).status_code, 403)
+        self.assertEqual(self.client.logout() or self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self.get(self.outsider, f'{self.URL}?unit={self.finance.pk}').status_code, 404)
+        self.assertEqual(self.ok(self.outsider, self.URL)['summary']['staff'], 1)
+        self.assertEqual(self.get(self.superadmin, self.URL).status_code, 400)
+        self.assertEqual(self.ok(self.superadmin, f'{self.URL}?tenant={self.tenant.pk}')['summary']['staff'], 5)
 
 
 class QuestionnaireAndRatingTests(TenantTestCase):

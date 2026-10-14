@@ -74,6 +74,12 @@ Skills nobody has rated are reported as not assessed and left out of the scores;
 - **Questionnaires** (`/questionnaires`) are built by admins: questions are rating (1 to 5), multiple choice, true/false or text. Everyone else can read and answer them.
 - **Role profiles:** open a job role (`/job-roles/<id>`) to set the skills it requires, the level, and any role-specific DIF scores. Admins place people in job roles on the People page.
 
+### TNA report
+
+Admins and managers open **TNA report** (`/reports/tna`) to preview the Training Needs Assessment for the whole institution or one department and download it as PDF or Excel. The report is built from the gap engine (`backend/app/tna_report.py`) and follows the usual public-service TNA layout: executive summary, methodology, organisational (department), occupational (job role) and individual analysis, prioritised training needs, recommendations, a sign-off block for the Head of HRM&D and the Authorised Officer, and an annex of training projections (officers to train per skill, highest priority first) for the Human Resource Management Advisory Committee.
+
+`GET /api/reports/tna/` returns the report as JSON. Parameters: `unit=<org unit id>` for one department and the units below it, `period=2026/27` for the financial year (defaults to the current July to June year), `download=pdf` or `download=xlsx` for a file, and `tenant=<id>` for super admins.
+
 List endpoints accept filters: `job-role-skills?job_role=`, `ratings?user=&skill=`, `questions?questionnaire=`, `question-choices?question=` or `?question__questionnaire=`, `question-responses?question=&question__questionnaire=&user=`.
 
 ## Conventions
