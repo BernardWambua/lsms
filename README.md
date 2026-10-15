@@ -5,7 +5,7 @@ A multi-tenant web app that helps companies map their organisation (org units an
 ## Layout
 
 ```
-backend/    Django 5.2 + Django REST Framework API (JWT auth, SQLite in dev)
+backend/    Django 5.2 + Django REST Framework API (JWT auth, PostgreSQL, or SQLite for quick local runs)
 frontend/   React 19 app (Create React App, MUI, React Router, axios)
 ```
 
@@ -28,6 +28,48 @@ For a demo, `python manage.py seed_demo` loads **Demo State Department**, an inv
 Settings come from environment variables; see `backend/.env.example`. Without them the app runs with development defaults.
 
 The API lives under `/api/`. Get a token with `POST /api/token/` and send it as `Authorization: Bearer <token>`.
+
+### Database (PostgreSQL)
+
+The backend uses PostgreSQL when `DATABASE_URL` is set and a local SQLite file (`backend/db.sqlite3`) when it isn't, so a quick local run needs no database server.
+
+To use PostgreSQL locally (Windows, after installing PostgreSQL with its installer):
+
+```powershell
+# Create a database and a user for LSMS (psql asks for the postgres password you set when installing)
+psql -U postgres -c "CREATE USER lsms WITH PASSWORD 'choose-a-password' CREATEDB;"
+psql -U postgres -c "CREATE DATABASE lsms OWNER lsms;"
+
+# Point the backend at it (this terminal only; use setx DATABASE_URL "..." to keep it, then open a new terminal)
+$env:DATABASE_URL = "postgres://lsms:choose-a-password@localhost:5432/lsms"
+
+cd backend
+.venv\Scripts\activate
+pip install -r requirements.txt
+python manage.py migrate
+```
+
+If the password has characters such as `@`, `:` or `/`, percent-encode them in the URL (`@` becomes `%40`). `CREATEDB` lets `python manage.py test` create its test database.
+
+#### Moving existing SQLite data to PostgreSQL
+
+Run these on the same branch and code as the data you're moving, so both databases have the same migrations.
+
+```powershell
+cd backend
+.venv\Scripts\activate
+
+# 1. Export from SQLite: make sure DATABASE_URL is NOT set in this terminal
+Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
+python -X utf8 manage.py dumpdata --natural-foreign --natural-primary --exclude contenttypes --exclude auth.permission --exclude admin.logentry --exclude sessions --indent 1 -o lsms-data.json
+
+# 2. Create the tables in PostgreSQL (the database must be empty), then load the export
+$env:DATABASE_URL = "postgres://lsms:choose-a-password@localhost:5432/lsms"
+python manage.py migrate
+python -X utf8 manage.py loaddata lsms-data.json
+```
+
+`-X utf8` keeps names with accents or other non-English characters intact on Windows. Accounts, passwords, ratings, plans and import history all come across. Keep `db.sqlite3` until you've checked the app on PostgreSQL, and delete `lsms-data.json` afterwards because it contains password hashes.
 
 ### Frontend (http://localhost:3000)
 
