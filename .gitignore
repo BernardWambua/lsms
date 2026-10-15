@@ -26,3 +26,6 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Data exports made when moving databases (contain password hashes)
+backend/lsms-data.json
