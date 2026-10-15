@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
+from .models import Grade, JobFamily, CompetencyFramework, ImportRun, Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password as run_password_validators
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -8,6 +8,7 @@ from .tenancy import scope_to_tenant
 from . import training_plan
 from .tna_report import PERIOD_PATTERN
 from .gaps import priority_label
+from .packs import PACK_CHOICES, apply_pack, terms_for
 
 
 class TenantScopedSerializer(serializers.ModelSerializer):
@@ -79,17 +80,98 @@ class OrgUnitSerializer(TenantScopedSerializer):
         model = OrgUnit
         fields = '__all__'
 
+
+class TenantUniqueMixin:
+    """Reports a clash on one of the model's per-tenant unique fields as a field error rather than a server error."""
+    unique_per_tenant = ()
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get('request')
+        tenant_id = getattr(getattr(request, 'user', None), 'tenant_id', None)
+        for name in self.unique_per_tenant:
+            value = attrs.get(name)
+            if not value:
+                continue
+            clash = self.Meta.model.objects.filter(tenant_id=tenant_id, **{f'{name}__iexact': value})
+            if self.instance is not None:
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError({name: [f'"{value}" is already used.']})
+        return attrs
+
+
+class GradeSerializer(TenantUniqueMixin, TenantScopedSerializer):
+    unique_per_tenant = ('code',)
+    staff_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = Grade
+        fields = '__all__'
+        validators = []
+
+
+class JobFamilySerializer(TenantUniqueMixin, TenantScopedSerializer):
+    unique_per_tenant = ('name',)
+    staff_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = JobFamily
+        fields = '__all__'
+        validators = []
+
+
+class CompetencyFrameworkSerializer(TenantUniqueMixin, TenantScopedSerializer):
+    unique_per_tenant = ('name',)
+    skill_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = CompetencyFramework
+        fields = '__all__'
+        validators = []
+
+
+class ImportRunSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ImportRun
+        fields = ('id', 'kind', 'file_name', 'counts', 'errors', 'created_by', 'created_by_name', 'created_at')
+        read_only_fields = fields
+
+    def get_created_by_name(self, run):
+        return (run.created_by.get_full_name() or run.created_by.username) if run.created_by else None
+
 class UserSerializer(TenantScopedSerializer):
     password = serializers.CharField(write_only=True, required=False, style={'input_type': 'password'})
 
     class Meta:
         model = get_user_model()
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'is_active', 'tenant', 'role', 'job_role', 'date_joined', 'last_login', 'password')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'is_active', 'tenant', 'role', 'job_role',
+                  'staff_number', 'supervisor', 'grade', 'job_family', 'employment_terms', 'date_of_appointment', 'gender', 'disability', 'extra',
+                  'date_joined', 'last_login', 'password')
         read_only_fields = ('id', 'is_staff', 'is_superuser', 'date_joined', 'last_login')
+        validators = []
 
     def validate_password(self, value):
         run_password_validators(value, self.instance)
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        number = attrs.get('staff_number')
+        if number:
+            request = self.context.get('request')
+            tenant_id = self.instance.tenant_id if self.instance else getattr(getattr(request, 'user', None), 'tenant_id', None)
+            clash = get_user_model().objects.filter(tenant_id=tenant_id, staff_number__iexact=number)
+            if self.instance is not None:
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError({'staff_number': [f'{number} already belongs to someone else.']})
+        supervisor = attrs.get('supervisor')
+        if supervisor is not None and self.instance is not None and supervisor.pk == self.instance.pk:
+            raise serializers.ValidationError({'supervisor': ["Someone can't supervise themselves."]})
+        return attrs
 
     def create(self, validated_data):
         user = get_user_model().objects.create_user(**validated_data)
@@ -113,14 +195,38 @@ class TenantSerializer(serializers.ModelSerializer):
     job_role_count = serializers.IntegerField(read_only=True, default=0)
     skill_count = serializers.IntegerField(read_only=True, default=0)
     pending_invitation_count = serializers.IntegerField(read_only=True, default=0)
+    # A configuration pack to load into a new organisation (its grades, job families and wording).
+    pack = serializers.ChoiceField(choices=PACK_CHOICES, write_only=True, required=False, allow_blank=True)
+    # The organisation's wording for every generic term, its own choices over the defaults.
+    terms = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
-        fields = ('id', 'name', 'industry', 'created_at', 'admin_email', 'user_count', 'org_unit_count', 'job_role_count', 'skill_count', 'pending_invitation_count')
+        fields = ('id', 'name', 'industry', 'created_at', 'admin_email', 'pack', 'terminology', 'terms',
+                  'user_count', 'org_unit_count', 'job_role_count', 'skill_count', 'pending_invitation_count')
+
+    def get_terms(self, tenant):
+        return terms_for(tenant)
+
+    def validate_terminology(self, value):
+        if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+            raise serializers.ValidationError('Give the wording as {"term": "word"}.')
+        return {k: v.strip() for k, v in value.items() if v.strip()}
+
+    def create(self, validated_data):
+        pack = validated_data.pop('pack', '')
+        tenant = super().create(validated_data)
+        if pack:
+            apply_pack(tenant, pack)
+        return tenant
 
     def update(self, instance, validated_data):
         validated_data.pop('admin_email', None)
-        return super().update(instance, validated_data)
+        pack = validated_data.pop('pack', '')
+        tenant = super().update(instance, validated_data)
+        if pack:
+            apply_pack(tenant, pack)
+        return tenant
 
 
 class InvitationSerializer(serializers.ModelSerializer):

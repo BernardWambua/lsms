@@ -1,13 +1,18 @@
 import datetime
+import io
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from openpyxl import Workbook, load_workbook
 from rest_framework.test import APIClient
 
 from .models import (
+    Grade, JobFamily, CompetencyFramework, ImportRun,
     Tenant, OrgUnit, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar,
     Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingNomination,
 )
@@ -62,6 +67,7 @@ class AuthenticationRequiredTests(TenantTestCase):
     ENDPOINTS = [
         'skills', 'job-roles', 'job-role-skills', 'ratings', 'training-calendar', 'org-units',
         'tenants', 'questionnaires', 'questions', 'question-choices', 'question-responses', 'users', 'invitations',
+        'grades', 'job-families', 'competency-frameworks', 'import-runs',
     ]
 
     def test_anonymous_cannot_list_anything(self):
@@ -983,3 +989,283 @@ class TrainingPlanTests(MinistryTestCase):
         nominations = list(workbook['Nominations'].values)
         self.assertEqual((nominations[1][1], nominations[1][10], nominations[1][11]), ('alice', 'Approved', 'Attended'))
         self.assertEqual(self.get(self.admin, f'/api/training-plans/{self.plan.pk}/export/?download=docx').status_code, 400)
+
+
+def csv_file(text, name='staff.csv'):
+    return SimpleUploadedFile(name, text.strip().encode('utf-8'), content_type='text/csv')
+
+
+def xlsx_file(sheets, name='upload.xlsx'):
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for title, rows in sheets.items():
+        sheet = workbook.create_sheet(title)
+        for row in rows:
+            sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return SimpleUploadedFile(name, buffer.getvalue())
+
+
+# An HRIS-style export: its own header names, a column LSMS doesn't know, and
+# an officer whose supervisor is further down the file.
+HRIS_EXPORT = """
+PF No.,Surname,First Name,Official Email,Directorate,Designation,Job Group,Cadre,Reports To,Terms of Service,Date of Appointment,Sex,PWD,Station
+1001,Otieno,Achieng,achieng@example.go.ke,Finance > Accounts,Accountant I,K,Accountants,1003,Permanent,01/07/2019,F,No,Kisumu
+1002,Kamau,Brian,,Finance > Accounts,Accountant I,K,Accountants,1003,contract,2021-03-15,M,yes,HQ
+1003,Wanjiru,Faith,faith@example.go.ke,Finance,Director Finance,R,Accountants,,P&P,,F,,HQ
+"""
+
+
+@FAST_HASHER
+class StaffImportTests(MinistryTestCase):
+    URL = '/api/imports/staff/'
+
+    def upload(self, file, commit=False, user=None):
+        self.client.force_authenticate(user=user or self.admin)
+        return self.client.post(self.URL, {'file': file, 'commit': 'true' if commit else 'false'}, format='multipart')
+
+    def test_check_reports_each_row_and_saves_nothing(self):
+        response = self.upload(csv_file(HRIS_EXPORT))
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()
+        self.assertEqual(data['counts']['created'], 3)
+        self.assertEqual(data['extra_columns'], ['Station'])
+        self.assertEqual(sorted(data['added']['grades']), ['K', 'R'])
+        self.assertIn('Finance > Accounts', data['added']['departments'])
+        self.assertFalse(User.objects.filter(staff_number='1001').exists())
+        self.assertFalse(Grade.objects.filter(tenant=self.tenant).exists())
+        self.assertFalse(ImportRun.objects.exists())
+
+    def test_commit_creates_staff_in_their_posts_with_supervisors(self):
+        data = self.upload(csv_file(HRIS_EXPORT), commit=True).json()
+        self.assertEqual(data['counts']['created'], 3)
+        achieng = User.objects.get(tenant=self.tenant, staff_number='1001')
+        self.assertEqual((achieng.first_name, achieng.last_name, achieng.email), ('Achieng', 'Otieno', 'achieng@example.go.ke'))
+        self.assertEqual((achieng.job_role.title, achieng.job_role.org_unit.name, achieng.job_role.org_unit.parent.name),
+                         ('Accountant I', 'Accounts', 'Finance'))
+        self.assertEqual((achieng.grade.code, achieng.job_family.name, achieng.supervisor.staff_number), ('K', 'Accountants', '1003'))
+        self.assertEqual((achieng.employment_terms, achieng.date_of_appointment, achieng.gender, achieng.disability),
+                         ('permanent', datetime.date(2019, 7, 1), 'female', False))
+        self.assertEqual(achieng.extra, {'Station': 'Kisumu'})
+        self.assertFalse(achieng.has_usable_password())
+        # Existing Finance unit is reused, not duplicated, and the new post sits in the new Accounts division.
+        self.assertEqual(OrgUnit.objects.filter(tenant=self.tenant, name='Finance').count(), 1)
+        self.assertEqual(User.objects.get(staff_number='1002').job_role, achieng.job_role)
+        self.assertEqual(ImportRun.objects.get().counts['created'], 3)
+
+    def test_reimport_matches_on_staff_number_and_only_changes_what_changed(self):
+        self.upload(csv_file(HRIS_EXPORT), commit=True)
+        changed = HRIS_EXPORT.replace('1002,Kamau,Brian,,Finance > Accounts,Accountant I,K', '1002,Kamau,Brian,,Finance > Accounts,Accountant I,L')
+        data = self.upload(csv_file(changed), commit=True).json()
+        self.assertEqual((data['counts']['created'], data['counts']['updated'], data['counts']['unchanged']), (0, 1, 2))
+        row = next(r for r in data['rows'] if r['key'] == '1002')
+        self.assertEqual(row['changes'], ['grade'])
+        self.assertEqual(User.objects.filter(tenant=self.tenant, staff_number__in=['1001', '1002', '1003']).count(), 3)
+
+    def test_people_missing_from_the_file_are_listed_not_deleted(self):
+        self.alice.staff_number = '0999'
+        self.alice.save()
+        data = self.upload(csv_file(HRIS_EXPORT), commit=True).json()
+        self.assertEqual([p['staff_number'] for p in data['not_in_file']], ['0999'])
+        self.assertTrue(User.objects.filter(pk=self.alice.pk, is_active=True).exists())
+
+    def test_existing_account_is_matched_on_email_the_first_time(self):
+        self.alice.email = 'achieng@example.go.ke'
+        self.alice.save()
+        self.upload(csv_file(HRIS_EXPORT), commit=True)
+        self.alice.refresh_from_db()
+        self.assertEqual((self.alice.staff_number, self.alice.first_name), ('1001', 'Achieng'))
+
+    def test_bad_rows_are_reported_and_skipped(self):
+        text = """
+Staff number,First name,Last name,Department,Designation,Date of appointment,Gender
+2001,Amina,Mohamed,HR,HR Officer,31/31/2020,female
+,Kibet,Langat,HR,HR Officer,,
+2003,Zawadi,Were,HR,HR Officer,,unknown
+2004,Halima,Owino,HR,HR Officer,,
+2004,Halima,Again,HR,HR Officer,,
+"""
+        data = self.upload(csv_file(text), commit=True).json()
+        self.assertEqual((data['counts']['created'], data['counts']['error']), (1, 4))
+        errors = {r['row']: r['errors'][0] for r in data['rows'] if r['action'] == 'error'}
+        self.assertIn('is not a date', errors[2])
+        self.assertIn('Staff number is empty', errors[3])
+        self.assertIn('not a valid gender', errors[4])
+        self.assertIn('already on row 5', errors[6])
+        self.assertEqual(len(ImportRun.objects.get().errors), 4)
+
+    def test_missing_required_column_rejects_the_file(self):
+        response = self.upload(csv_file('Staff number,First name\n1,A'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Last name', response.json()['file'][0])
+
+    def test_unsupported_file_is_rejected(self):
+        response = self.upload(SimpleUploadedFile('staff.pdf', b'%PDF'))
+        self.assertEqual(response.status_code, 400)
+
+    def test_admin_cannot_change_their_own_access_by_import(self):
+        self.admin.staff_number = '3001'
+        self.admin.save()
+        text = 'Staff number,First name,Last name,Department,Designation,LSMS access\n3001,Ad,Min,HR,HR Head,employee'
+        data = self.upload(csv_file(text), commit=True).json()
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.role, 'admin')
+        self.assertTrue(data['rows'][0]['warnings'])
+
+    def test_only_admins_import(self):
+        for user in (self.manager, self.alice, self.superadmin):
+            with self.subTest(user=user.username):
+                self.assertEqual(self.upload(csv_file(HRIS_EXPORT), user=user).status_code, 403)
+
+    def test_template_lists_the_columns_and_this_tenants_grades(self):
+        Grade.objects.create(tenant=self.tenant, code='K', rank=1)
+        response = self.get(self.admin, '/api/imports/staff/template/')
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(io.BytesIO(response.content))
+        self.assertEqual(workbook.sheetnames, ['Instructions', 'Staff', 'Lists'])
+        headers = [c.value for c in workbook['Staff'][1]]
+        self.assertEqual(headers[:3], ['Staff number*', 'First name*', 'Last name*'])
+        self.assertIn('K', [c.value for row in workbook['Lists'].iter_rows() for c in row])
+        self.assertEqual(self.get(self.alice, '/api/imports/staff/template/').status_code, 403)
+
+    def test_filled_template_imports(self):
+        template = self.get(self.admin, '/api/imports/staff/template/').content
+        workbook = load_workbook(io.BytesIO(template))
+        workbook['Staff'].append(['4001', 'Mwende', 'Kilonzo', '', 'HR', 'HR Officer', 'J'])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        data = self.upload(SimpleUploadedFile('filled.xlsx', buffer.getvalue()), commit=True).json()
+        self.assertEqual(data['counts']['created'], 1, data)
+
+
+@FAST_HASHER
+class CompetencyImportTests(MinistryTestCase):
+    URL = '/api/imports/competencies/'
+    COMPETENCIES = [
+        ['Framework', 'Issuer', 'Code', 'Competency', 'Category', 'Difficulty', 'Importance', 'Frequency'],
+        ['Demo Framework', 'Demo Commission', 'CC-01', 'Integrity', 'core', 2, 5, 5],
+        ['Demo Framework', '', 'CC-02', 'Citizen focus', 'core', '', '', ''],
+        ['Demo Framework', '', 'FC-01', 'IFMIS', 'technical', 4, 3, 4],
+    ]
+    REQUIREMENTS = [
+        ['Designation', 'Competency', 'Required level'],
+        ['Accountant', 'CC-01', 4],
+        ['Accountant', 'Citizen focus', 'Intermediate'],
+        ['Cleaner', 'CC-01', 3],
+        ['HR Officer', 'CC-99', 7],
+    ]
+
+    def upload(self, sheets, commit=True):
+        self.client.force_authenticate(user=self.admin)
+        return self.client.post(self.URL, {'file': xlsx_file(sheets), 'commit': 'true' if commit else 'false'}, format='multipart')
+
+    def test_framework_competencies_and_role_requirements(self):
+        data = self.upload({'Competencies': self.COMPETENCIES, 'Role requirements': self.REQUIREMENTS}).json()
+        self.assertEqual((data['counts']['created'], data['counts']['updated']), (2, 1))
+        framework = CompetencyFramework.objects.get(tenant=self.tenant)
+        self.assertEqual((framework.name, framework.issuer), ('Demo Framework', 'Demo Commission'))
+        # The existing IFMIS skill joins the framework rather than being duplicated.
+        self.ifmis.refresh_from_db()
+        self.assertEqual((self.ifmis.framework, self.ifmis.code, self.ifmis.usage_frequency), (framework, 'FC-01', 4))
+        self.assertEqual(Skill.objects.get(code='CC-02').difficulty, 3)
+        requirements = data['requirements']
+        self.assertEqual((requirements['counts']['created'], requirements['counts']['error']), (2, 2))
+        errors = [r['errors'] for r in requirements['rows'] if r['action'] == 'error']
+        self.assertIn('no post called "Cleaner"', errors[0][0])
+        self.assertEqual(len(errors[1]), 2)
+        integrity = JobRoleSkill.objects.get(job_role__title='Accountant', skill__code='CC-01')
+        self.assertEqual(integrity.required_level, 4)
+        self.assertEqual(JobRoleSkill.objects.get(job_role__title='Accountant', skill__code='CC-02').required_level, 3)
+
+    def test_reimport_is_unchanged(self):
+        sheets = {'Competencies': self.COMPETENCIES, 'Role requirements': self.REQUIREMENTS[:3]}
+        self.upload(sheets)
+        data = self.upload(sheets).json()
+        self.assertEqual(data['counts']['unchanged'], 3)
+        self.assertEqual(data['requirements']['counts']['unchanged'], 2)
+        self.assertEqual(Skill.objects.filter(tenant=self.tenant).count(), 4)
+
+    def test_csv_with_competencies_only(self):
+        self.client.force_authenticate(user=self.admin)
+        text = 'Framework,Code,Competency\nDemo,CC-01,Integrity'
+        data = self.client.post(self.URL, {'file': csv_file(text, 'c.csv'), 'commit': 'true'}, format='multipart').json()
+        self.assertEqual((data['counts']['created'], data['requirements']), (1, None))
+
+    def test_template_has_both_sheets(self):
+        response = self.get(self.admin, '/api/imports/competencies/template/')
+        workbook = load_workbook(io.BytesIO(response.content))
+        self.assertEqual(workbook.sheetnames, ['Instructions', 'Competencies', 'Role requirements', 'Lists'])
+
+
+@FAST_HASHER
+class StaffRecordTests(MinistryTestCase):
+    def test_me_includes_the_tenants_wording(self):
+        self.assertEqual(self.ok(self.alice, '/api/users/me/')['terms']['grade'], 'Grade')
+        self.tenant.terminology = {'grade': 'Job Group'}
+        self.tenant.save()
+        terms = self.ok(self.alice, '/api/users/me/')['terms']
+        self.assertEqual((terms['grade'], terms['staff_number']), ('Job Group', 'Staff number'))
+
+    def test_new_organisation_can_start_from_a_pack(self):
+        self.client.force_authenticate(user=self.superadmin)
+        response = self.client.post('/api/tenants/', {'name': 'State Dept', 'pack': 'kenya_public_service'}, format='json')
+        self.assertEqual(response.status_code, 201, response.content)
+        tenant = Tenant.objects.get(name='State Dept')
+        self.assertEqual(response.json()['terms']['grade'], 'Job Group')
+        self.assertEqual(Grade.objects.filter(tenant=tenant).count(), 18)
+        self.assertTrue(JobFamily.objects.filter(tenant=tenant, name='Accountants').exists())
+
+    def test_staff_numbers_are_unique_within_a_tenant_only(self):
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.patch(f'/api/users/{self.alice.pk}/', {'staff_number': 'P1'}, format='json').status_code, 200)
+        response = self.client.patch(f'/api/users/{self.bob.pk}/', {'staff_number': 'p1'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.outsider.staff_number = 'P2'
+        self.outsider.save()
+        self.assertEqual(self.client.patch(f'/api/users/{self.bob.pk}/', {'staff_number': 'P2'}, format='json').status_code, 200)
+
+    def test_people_cannot_change_their_own_staff_record(self):
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.patch(f'/api/users/{self.alice.pk}/', {'staff_number': 'X'}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_supervisor_and_grade_must_be_in_the_tenant(self):
+        other_grade = Grade.objects.create(tenant=self.other_tenant, code='Z')
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(f'/api/users/{self.alice.pk}/', {'grade': str(other_grade.pk), 'supervisor': str(self.outsider.pk)}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(set(response.json()), {'grade', 'supervisor'})
+
+    def test_grades_are_tenant_scoped_and_admin_written(self):
+        Grade.objects.create(tenant=self.other_tenant, code='Z')
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post('/api/grades/', {'code': 'K', 'name': 'Job Group K', 'rank': 9}, format='json').status_code, 201)
+        self.assertEqual(self.client.post('/api/grades/', {'code': 'k'}, format='json').status_code, 400)
+        self.assertEqual([g['code'] for g in self.ok(self.alice, '/api/grades/')], ['K'])
+        self.client.force_authenticate(user=self.alice)
+        self.assertEqual(self.client.post('/api/grades/', {'code': 'L'}, format='json').status_code, 403)
+
+    def test_reports_show_the_staff_number(self):
+        self.alice.staff_number = 'PF-123'
+        self.alice.save()
+        report = self.ok(self.admin, '/api/reports/tna/')
+        alice = next(p for p in report['individuals'] if p['user']['username'] == 'alice')
+        self.assertEqual(alice['user']['staff_number'], 'PF-123')
+        bob = next(p for p in report['individuals'] if p['user']['username'] == 'bob')
+        self.assertEqual(bob['user']['staff_number'], 'bob')
+
+
+@FAST_HASHER
+class DemoDataTests(TestCase):
+    def test_seed_demo_loads_a_working_institution(self):
+        call_command('seed_demo', stdout=io.StringIO())
+        tenant = Tenant.objects.get(name='Demo State Department')
+        self.assertEqual(tenant.terminology['grade'], 'Job Group')
+        staff = User.objects.filter(tenant=tenant)
+        self.assertGreater(staff.count(), 30)
+        self.assertTrue(staff.filter(role='admin').exclude(password__startswith='!').exists())
+        self.assertTrue(TrainingPlan.objects.get(tenant=tenant).programmes.exists())
+        with self.assertRaises(Exception):
+            call_command('seed_demo', stdout=io.StringIO())
+        call_command('seed_demo', '--reset', stdout=io.StringIO())

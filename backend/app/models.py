@@ -21,6 +21,9 @@ class Tenant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     industry = models.CharField(max_length=255, blank=True)
+    # The organisation's own words for LSMS's generic terms, e.g. {"grade": "Job Group"}.
+    # Keys the tenant hasn't set fall back to the defaults in packs.DEFAULT_TERMS.
+    terminology = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
@@ -40,6 +43,93 @@ class User(AbstractUser):
     # the role's skill profile is what their gaps are measured against.
     job_role = models.ForeignKey('JobRole', null=True, blank=True, on_delete=models.SET_NULL, related_name='holders')
 
+    # The staff record as the organisation's HR system holds it. Only what TNA
+    # reporting needs: no national ID, date of birth or ethnicity.
+    staff_number = models.CharField(max_length=50, blank=True)
+    supervisor = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='supervisees')
+    grade = models.ForeignKey('Grade', null=True, blank=True, on_delete=models.SET_NULL, related_name='staff')
+    job_family = models.ForeignKey('JobFamily', null=True, blank=True, on_delete=models.SET_NULL, related_name='staff')
+    TERMS_CHOICES = [
+        ('permanent', 'Permanent and pensionable'),
+        ('contract', 'Contract'),
+        ('temporary', 'Temporary'),
+        ('intern', 'Intern'),
+    ]
+    employment_terms = models.CharField(max_length=20, choices=TERMS_CHOICES, blank=True)
+    date_of_appointment = models.DateField(null=True, blank=True)
+    GENDER_CHOICES = [('female', 'Female'), ('male', 'Male'), ('other', 'Other')]
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
+    disability = models.BooleanField(null=True, blank=True)
+    # Other columns from the HR export the organisation chose to keep (station, county, ...).
+    extra = models.JSONField(default=dict, blank=True)
+
+    class Meta(AbstractUser.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'staff_number'], condition=~models.Q(staff_number=''), name='unique_staff_number_per_tenant',
+            ),
+        ]
+
+    @property
+    def staff_ref(self):
+        """The number reports show for this person: their staff number, or their username until they have one."""
+        return self.staff_number or self.username
+
+
+class Grade(models.Model):
+    """
+    A salary grade or level (a Job Group in the Kenyan public service, a band in a
+    company). ``rank`` orders grades from junior to senior; ``aliases`` are other
+    codes that mean the same grade, so imports using another scheme still match.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    code = models.CharField(max_length=20)
+    name = models.CharField(max_length=100, blank=True)
+    rank = models.PositiveSmallIntegerField(default=0)
+    aliases = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['rank', 'code']
+        constraints = [models.UniqueConstraint(fields=['tenant', 'code'], name='unique_grade_code_per_tenant')]
+
+    def __str__(self):
+        return self.name or self.code
+
+
+class JobFamily(models.Model):
+    """An occupational group: a cadre or scheme of service in the public service, a job family in a company."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    code = models.CharField(max_length=20, blank=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'job families'
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name'], name='unique_job_family_per_tenant')]
+
+    def __str__(self):
+        return self.name
+
+
+class CompetencyFramework(models.Model):
+    """A published set of competencies (e.g. a public service commission's framework) that skills come from."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    issuer = models.CharField(max_length=255, blank=True)
+    version = models.CharField(max_length=50, blank=True)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name'], name='unique_framework_per_tenant')]
+
+    def __str__(self):
+        return self.name
+
 class OrgUnit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
@@ -55,6 +145,8 @@ class JobRole(models.Model):
     org_unit = models.ForeignKey(OrgUnit, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    grade = models.ForeignKey(Grade, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
+    job_family = models.ForeignKey(JobFamily, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
     
     def __str__(self):
         return self.title
@@ -64,11 +156,19 @@ class Skill(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    # The category the skill sits in; competency frameworks usually split into core,
+    # functional/technical and leadership competencies.
     SKILL_TYPE_CHOICES = [
+        ('core', 'Core'),
+        ('functional', 'Functional'),
         ('technical', 'Technical'),
+        ('leadership', 'Leadership'),
         ('soft', 'Soft'),
     ]
     type = models.CharField(max_length=20, choices=SKILL_TYPE_CHOICES, default='technical')
+    framework = models.ForeignKey(CompetencyFramework, null=True, blank=True, on_delete=models.SET_NULL, related_name='skills')
+    # The competency's code in its framework, so re-importing a framework updates rather than duplicates.
+    code = models.CharField(max_length=50, blank=True)
     difficulty = models.IntegerField()
     usage_frequency = models.IntegerField()
     impact_if_missing = models.IntegerField()
@@ -332,3 +432,19 @@ class TrainingEvaluation(models.Model):
     supervisor_comments = models.TextField(blank=True)
     supervisor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_evaluations_given')
     supervisor_submitted_at = models.DateTimeField(null=True, blank=True)
+
+
+class ImportRun(models.Model):
+    """One upload of a staff or competency file: who ran it, what it changed, and the rows it couldn't take."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    KIND_CHOICES = [('staff', 'Staff'), ('competencies', 'Competency framework')]
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    file_name = models.CharField(max_length=255)
+    counts = models.JSONField(default=dict)
+    errors = models.JSONField(default=list)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='import_runs')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']

@@ -111,7 +111,7 @@ class GapEngine:
         assessed = [row for row in rows if row['gap'] is not None]
         role = user.job_role
         return {
-            'user': {'id': user.pk, 'username': user.username, 'name': user.get_full_name()},
+            'user': {'id': user.pk, 'username': user.username, 'staff_number': user.staff_ref, 'name': user.get_full_name()},
             'job_role': _ref(role, 'title'),
             'org_unit': _ref(role.org_unit if role else None),
             'gap_score': gap_score(assessed),

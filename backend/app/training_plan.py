@@ -107,7 +107,7 @@ def _mean(values):
 def _person(user):
     role = user.job_role
     return {
-        'id': user.pk, 'username': user.username, 'name': user.get_full_name(),
+        'id': user.pk, 'username': user.username, 'staff_number': user.staff_ref, 'name': user.get_full_name(),
         'job_role': {'id': role.pk, 'title': role.title} if role else None,
         'org_unit': {'id': role.org_unit.pk, 'name': role.org_unit.name} if role and role.org_unit else None,
     }
@@ -313,7 +313,7 @@ def participants_table(rows):
     table = []
     for row in rows:
         n, p, e = row['nomination'], row['person'], row['evaluation']
-        table.append([row['programme'].title, p['name'] or p['username'], p['username'], p['job_role']['title'] if p['job_role'] else '—',
+        table.append([row['programme'].title, p['name'] or p['username'], p['staff_number'], p['job_role']['title'] if p['job_role'] else '—',
                       p['org_unit']['name'] if p['org_unit'] else '—', _level(n.current_level), _level(n.required_level), STATUS_NAMES[n.status],
                       ATTENDANCE_NAMES[n.attendance], _dash(e.reaction_rating if e else None), _level(e.post_training_level if e else None)])
     return header, table
@@ -484,7 +484,7 @@ def render_xlsx(data, rows):
     table = []
     for row in rows:
         n, p, e = row['nomination'], row['person'], row['evaluation']
-        table.append([row['programme'].title, p['name'] or p['username'], p['username'], p['job_role']['title'] if p['job_role'] else '',
+        table.append([row['programme'].title, p['name'] or p['username'], p['staff_number'], p['job_role']['title'] if p['job_role'] else '',
                       p['org_unit']['name'] if p['org_unit'] else '', dict(TrainingNomination.SOURCE_CHOICES)[n.source], n.current_level,
                       n.required_level, n.gap, n.priority_score, STATUS_NAMES[n.status], ATTENDANCE_NAMES[n.attendance], n.days_attended,
                       e.reaction_rating if e else None, e.relevance_rating if e else None, e.pre_test_score if e else None,

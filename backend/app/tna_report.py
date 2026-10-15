@@ -260,14 +260,14 @@ def individuals_table(report):
     rows = []
     for p in report['individuals']:
         gaps = ', '.join(f"{g['skill']['name']} (-{g['gap']})" for g in p['gaps']) or ('None' if p['skills_assessed'] else 'Not assessed')
-        rows.append([_name(p['user']), p['user']['username'], p['job_role']['title'] if p['job_role'] else '—',
+        rows.append([_name(p['user']), p['user']['staff_number'], p['job_role']['title'] if p['job_role'] else '—',
                      p['org_unit']['name'] if p['org_unit'] else '—', p['skills_required'], p['skills_assessed'], _num(p['gap_score']), gaps])
     return header, rows
 
 
 def projections_table(report):
     header = ['#', 'Skill / training area', 'Officer', 'P/F No.', 'Job role', 'Department', 'Required', 'Current', 'Gap', 'Priority']
-    rows = [[i, p['skill']['name'], _name(p['officer']), p['officer']['username'], p['job_role']['title'] if p['job_role'] else '—',
+    rows = [[i, p['skill']['name'], _name(p['officer']), p['officer']['staff_number'], p['job_role']['title'] if p['job_role'] else '—',
              p['org_unit']['name'] if p['org_unit'] else '—', _level(p['required_level']), _level(p['current_level']), p['gap'],
              PRIORITY_NAMES[p['priority']]]
             for i, p in enumerate(report['projections'], start=1)]
@@ -279,7 +279,7 @@ def sections(report):
     return [
         ('3', 'Organisational analysis', 'Gaps by department. Each line includes the units below it, shown indented.', organisational_table(report)),
         ('4', 'Occupational analysis', 'Gaps by job role, measured against each role\'s skill profile.', occupational_table(report)),
-        ('5', 'Individual analysis', 'Each officer\'s gaps against their job role. P/F No. is the officer\'s LSMS username.', individuals_table(report)),
+        ('5', 'Individual analysis', 'Each officer\'s gaps against their job role. P/F No. is the officer\'s staff number, or their LSMS username where HR hasn\'t recorded one.', individuals_table(report)),
         ('6', 'Prioritised training needs', 'Skills ranked by the total DIF-weighted gap across all officers.', needs_table(report)),
     ]
 
@@ -448,7 +448,7 @@ def render_xlsx(report):
     # Projections keep numeric levels so they can be sorted and summed.
     header = ['#', 'Skill / training area', 'Officer', 'P/F No.', 'Job role', 'Department', 'Required level', 'Current level',
               'Rated by', 'Gap', 'Priority score', 'Priority']
-    rows = [[i, p['skill']['name'], _name(p['officer']), p['officer']['username'], p['job_role']['title'] if p['job_role'] else '',
+    rows = [[i, p['skill']['name'], _name(p['officer']), p['officer']['staff_number'], p['job_role']['title'] if p['job_role'] else '',
              p['org_unit']['name'] if p['org_unit'] else '', p['required_level'], p['current_level'],
              'Supervisor' if p['rating_source'] == 'manager' else 'Self', p['gap'], p['priority_score'], PRIORITY_NAMES[p['priority']]]
             for i, p in enumerate(report['projections'], 1)]

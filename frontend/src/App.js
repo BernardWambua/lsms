@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { Box, CircularProgress, Container, CssBaseline } from "@mui/material";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
@@ -25,7 +26,10 @@ import TrainingPlansPage from "./components/training/TrainingPlansPage";
 import TrainingPlanPage from "./components/training/TrainingPlanPage";
 import ProgrammePage from "./components/training/ProgrammePage";
 import MyTrainingPage from "./components/training/MyTrainingPage";
-import { JOB_ROLES, ORG_UNITS, QUESTIONNAIRES, SKILLS } from "./components/structure/resources";
+import ImportPage from "./components/imports/ImportPage";
+import ClassificationPage from "./components/admin/ClassificationPage";
+import { jobRoles, ORG_UNITS, QUESTIONNAIRES, skills } from "./components/structure/resources";
+import { useTerms } from "./utils/terms";
 
 const TENANT_ROLES = ['admin', 'manager', 'employee'];
 const REVIEWERS = ['admin', 'manager'];
@@ -48,11 +52,15 @@ function Home() {
 }
 
 // Org structure pages: everyone in the tenant can look, only admins can change.
+// `resource` is a definition, or a function of the organisation's wording that returns one.
 function StructurePage({ resource, rowLink }) {
   const { role } = useAuth();
+  const terms = useTerms();
+  // Memoised so the page doesn't see new field definitions, and reload, on every render.
+  const definition = useMemo(() => (typeof resource === 'function' ? resource(terms) : resource), [resource, terms]);
   return (
     <RequireRole roles={TENANT_ROLES}>
-      <ResourcePage {...resource} readOnly={role !== 'admin'} rowLink={rowLink} />
+      <ResourcePage {...definition} readOnly={role !== 'admin'} rowLink={rowLink} />
     </RequireRole>
   );
 }
@@ -76,10 +84,12 @@ function App() {
               <Route path="/tenants/:id" element={<RequireRole roles={['superadmin']}><TenantDetail /></RequireRole>} />
               <Route path="/org-structure" element={<RequireRole roles={['admin']}><OrgStructurePage /></RequireRole>} />
               <Route path="/people" element={<RequireRole roles={['admin']}><PeoplePage /></RequireRole>} />
+              <Route path="/imports" element={<RequireRole roles={['admin']}><ImportPage /></RequireRole>} />
+              <Route path="/classification" element={<RequireRole roles={['admin']}><ClassificationPage /></RequireRole>} />
               <Route path="/org-units" element={<StructurePage resource={ORG_UNITS} />} />
-              <Route path="/job-roles" element={<StructurePage resource={JOB_ROLES} rowLink={(role) => `/job-roles/${role.id}`} />} />
+              <Route path="/job-roles" element={<StructurePage resource={jobRoles} rowLink={(role) => `/job-roles/${role.id}`} />} />
               <Route path="/job-roles/:id" element={tenantPage(<RoleProfilePage />)} />
-              <Route path="/skills" element={<StructurePage resource={SKILLS} />} />
+              <Route path="/skills" element={<StructurePage resource={skills} />} />
               <Route path="/questionnaires" element={<StructurePage resource={QUESTIONNAIRES} rowLink={(q) => `/questionnaires/${q.id}`} />} />
               <Route path="/questionnaires/:id" element={tenantPage(<QuestionnairePage />)} />
               <Route path="/questionnaires/:id/answer" element={tenantPage(<AnswerQuestionnaire />)} />

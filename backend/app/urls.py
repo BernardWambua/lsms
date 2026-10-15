@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView, TrainingPlanViewSet, TrainingProgrammeViewSet, TrainingNominationViewSet
+from .views import GradeViewSet, JobFamilyViewSet, CompetencyFrameworkViewSet, ImportRunViewSet, ImportView, ImportTemplateView, SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView, TrainingPlanViewSet, TrainingProgrammeViewSet, TrainingNominationViewSet
 
 router = DefaultRouter()
 router.register(r'skills', SkillViewSet)
@@ -10,6 +10,10 @@ router.register(r'job-role-skills', JobRoleSkillViewSet)
 router.register(r'ratings', EmployeeSkillRatingViewSet)
 router.register(r'training-calendar', TrainingCalendarViewSet)
 router.register(r'org-units', OrgUnitViewSet)
+router.register(r'grades', GradeViewSet)
+router.register(r'job-families', JobFamilyViewSet)
+router.register(r'competency-frameworks', CompetencyFrameworkViewSet)
+router.register(r'import-runs', ImportRunViewSet)
 router.register(r'tenants', TenantViewSet)
 router.register(r'questionnaires', QuestionnaireViewSet)
 router.register(r'questions', QuestionViewSet)
@@ -27,6 +31,8 @@ urlpatterns = [
     path('gaps/departments/<uuid:pk>/', DepartmentGapsView.as_view(), name='department_gaps'),
     path('gaps/institution/', InstitutionGapsView.as_view(), name='institution_gaps'),
     path('reports/tna/', TNAReportView.as_view(), name='tna_report'),
+    path('imports/<str:kind>/template/', ImportTemplateView.as_view(), name='import_template'),
+    path('imports/<str:kind>/', ImportView.as_view(), name='import'),
     path('org-structure/', OrgStructureView.as_view(), name='org_structure'),
     path('invitations/accept/<str:token>/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('', include(router.urls)),

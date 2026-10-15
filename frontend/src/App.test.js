@@ -369,3 +369,45 @@ test('employees cannot open training plans', async () => {
   await waitFor(() => expect(screen.queryByRole('heading', { name: 'Training plans' })).not.toBeInTheDocument());
   expect(api.get).not.toHaveBeenCalledWith('/training-plans/');
 });
+
+const KENYA_ADMIN = {
+  id: 'u1', username: 'ada', is_superuser: false, tenant: 't1', role: 'admin',
+  terms: { grade: 'Job Group', grades: 'Job Groups', job_family: 'Cadre', job_families: 'Cadres', staff_number: 'P/F No.' },
+};
+
+test("pages use the organisation's own words for grades and job families", async () => {
+  window.history.pushState({}, '', '/classification');
+  loggedInAs(KENYA_ADMIN, { '/grades/': [{ id: 'g1', code: 'K', name: 'Job Group K', rank: 10, staff_count: 4 }] });
+  render(<App />);
+  expect(await screen.findByRole('tab', { name: 'Job Groups' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Cadres' })).toBeInTheDocument();
+  expect(await screen.findByText('Job Group K')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /add job group/i })).toBeInTheDocument();
+});
+
+test('admins check a staff file before importing it', async () => {
+  window.history.pushState({}, '', '/imports');
+  loggedInAs(KENYA_ADMIN);
+  const row = (n, key, action, extra = {}) => ({ row: n, key, label: `Officer ${key}`, action, changes: [], errors: [], warnings: [], ...extra });
+  const checked = {
+    kind: 'staff', committed: false,
+    counts: { created: 1, updated: 0, unchanged: 1, error: 1 },
+    rows: [row(2, '1001', 'created'), row(3, '1002', 'unchanged'), row(4, '', 'error', { errors: ['Staff number is empty.'] })],
+    added: { departments: ['Finance > Accounts'] }, not_in_file: [{ id: 'u9', staff_number: '0999', name: 'Old Hand' }], extra_columns: ['Station'],
+  };
+  api.post.mockResolvedValueOnce({ data: checked }).mockResolvedValueOnce({ data: { ...checked, committed: true, run: 'r1' } });
+  render(<App />);
+  expect(await screen.findByRole('heading', { name: 'Import' })).toBeInTheDocument();
+  const file = new File(['PF No.,Surname'], 'hris.csv', { type: 'text/csv' });
+  fireEvent.change(screen.getByLabelText('Staff file'), { target: { files: [file] } });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Check file' })[0]);
+  expect(await screen.findByText(/Nothing has been saved yet/)).toBeInTheDocument();
+  expect(screen.getByText('Staff number is empty.')).toBeInTheDocument();
+  expect(screen.queryByText('Officer 1002')).not.toBeInTheDocument();
+  expect(screen.getByText(/Old Hand \(0999\)/)).toBeInTheDocument();
+  expect(screen.getByText(/Departments \(1\): Finance > Accounts/)).toBeInTheDocument();
+  expect(api.post.mock.calls[0][1].get('commit')).toBe('false');
+  fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+  expect(await screen.findByText(/Imported\. Rows with errors were skipped/)).toBeInTheDocument();
+  expect(api.post.mock.calls[1][1].get('commit')).toBe('true');
+});

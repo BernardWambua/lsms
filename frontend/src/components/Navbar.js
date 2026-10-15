@@ -21,6 +21,8 @@ const LINKS = {
     { to: '/reports/tna', label: 'TNA report' },
     { to: '/training-plans', label: 'Training plan' },
     { to: '/people', label: 'People' },
+    { to: '/classification', label: 'Classification' },
+    { to: '/imports', label: 'Import' },
   ],
   manager: [
     { to: '/', label: 'Home' },

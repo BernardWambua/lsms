@@ -10,12 +10,13 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
-from .serializers import SkillSerializer, JobRoleSerializer, JobRoleSkillSerializer, EmployeeSkillRatingSerializer, TrainingCalendarSerializer, OrgUnitSerializer, TenantSerializer, QuestionnaireSerializer, QuestionSerializer, QuestionChoiceSerializer, QuestionResponseSerializer, UserSerializer, InvitationSerializer, AcceptInvitationSerializer, TrainingPlanSerializer, TrainingProgrammeSerializer, TrainingNominationSerializer, TrainingEvaluationSerializer
+from .models import Grade, JobFamily, CompetencyFramework, ImportRun, Skill, JobRole, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Tenant, Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
+from .serializers import GradeSerializer, JobFamilySerializer, CompetencyFrameworkSerializer, ImportRunSerializer, SkillSerializer, JobRoleSerializer, JobRoleSkillSerializer, EmployeeSkillRatingSerializer, TrainingCalendarSerializer, OrgUnitSerializer, TenantSerializer, QuestionnaireSerializer, QuestionSerializer, QuestionChoiceSerializer, QuestionResponseSerializer, UserSerializer, InvitationSerializer, AcceptInvitationSerializer, TrainingPlanSerializer, TrainingProgrammeSerializer, TrainingNominationSerializer, TrainingEvaluationSerializer
 from .invitations import create_invitation, accept_invitation, InvitationUnavailable
 from .tenancy import scope_to_tenant
 from .gaps import GapEngine
-from . import tna_report, training_plan
+from . import imports, tna_report, training_plan
+from .packs import terms_for
 
 
 def is_tenant_admin(user):
@@ -139,6 +140,80 @@ class OrgUnitViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = OrgUnit.objects.all()
     serializer_class = OrgUnitSerializer
     permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+# Grades, job families and competency frameworks: the organisation's own
+# classification of its staff and skills. Everyone reads; admins write.
+class GradeViewSet(TenantScopedMixin, viewsets.ModelViewSet):
+    queryset = Grade.objects.annotate(staff_count=Count('staff', distinct=True)).order_by('rank', 'code')
+    serializer_class = GradeSerializer
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+class JobFamilyViewSet(TenantScopedMixin, viewsets.ModelViewSet):
+    queryset = JobFamily.objects.annotate(staff_count=Count('staff', distinct=True)).order_by('name')
+    serializer_class = JobFamilySerializer
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+class CompetencyFrameworkViewSet(TenantScopedMixin, viewsets.ModelViewSet):
+    queryset = CompetencyFramework.objects.annotate(skill_count=Count('skills', distinct=True)).order_by('name')
+    serializer_class = CompetencyFrameworkSerializer
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+
+class IsTenantAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return is_tenant_admin(request.user)
+
+
+XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+class ImportTemplateView(APIView):
+    """Admin-only: the Excel template for a staff or competency import, with this organisation's grades and posts in its drop-downs."""
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+
+    def get(self, request, kind):
+        if kind not in imports.TEMPLATES:
+            raise Http404
+        response = HttpResponse(imports.TEMPLATES[kind](request.user.tenant), content_type=XLSX)
+        response['Content-Disposition'] = f'attachment; filename="lsms-{kind}-template.xlsx"'
+        return response
+
+
+class ImportView(APIView):
+    """
+    Admin-only: upload a staff or competency file (``file``, .xlsx or .csv).
+    Without ``commit=true`` nothing is saved and the response says what each
+    row would do; with it the import runs and is recorded as an ImportRun.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+
+    def post(self, request, kind):
+        if kind not in imports.IMPORTERS:
+            raise Http404
+        upload = request.FILES.get('file')
+        if upload is None:
+            return Response({'file': ['Choose a file to upload.']}, status=status.HTTP_400_BAD_REQUEST)
+        commit = str(request.data.get('commit', '')).lower() in ('true', '1', 'yes')
+        try:
+            sheets = imports.read_file(upload)
+            result = imports.IMPORTERS[kind](request.user.tenant, by=request.user).run(sheets, commit=commit)
+        except imports.ImportFileError as exc:
+            return Response({'file': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        if commit:
+            rows = result['rows'] + ((result.get('requirements') or {}).get('rows') or [])
+            run = ImportRun.objects.create(
+                tenant=request.user.tenant, kind=kind, file_name=upload.name[:255], created_by=request.user,
+                counts=result['counts'], errors=[row for row in rows if row['action'] == 'error'],
+            )
+            result['run'] = run.pk
+        return Response(result)
+
+
+class ImportRunViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = ImportRun.objects.select_related('created_by').order_by('-created_at')
+    serializer_class = ImportRunSerializer
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+    filter_params = ('kind',)
 
 class OrgStructureView(APIView):
     """
@@ -422,13 +497,20 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     superadmin_can_write = True
 
+    # The staff record HR keeps; people can't change these on their own account.
+    HR_FIELDS = ('role', 'is_active', 'job_role', 'staff_number', 'supervisor', 'grade', 'job_family',
+                 'employment_terms', 'date_of_appointment', 'gender', 'disability', 'extra')
+
     def get_queryset(self):
         return super().get_queryset().order_by('username')
 
     @action(detail=False, methods=['get'])
     def me(self, request):
-        """The logged-in user, so the frontend knows who they are and what they can do."""
-        return Response(self.get_serializer(request.user).data)
+        """
+        The logged-in user, so the frontend knows who they are and what they can do,
+        with their organisation's wording for LSMS's generic terms.
+        """
+        return Response({**self.get_serializer(request.user).data, 'terms': terms_for(request.user.tenant)})
 
     # There is no public signup: people join through an invitation, or a tenant admin adds them here.
     def perform_create(self, serializer):
@@ -438,16 +520,16 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         user = self.request.user
-        changes_access = any(
-            field in serializer.validated_data and serializer.validated_data[field] != getattr(serializer.instance, field)
-            for field in ('role', 'is_active', 'job_role')
-        )
+        changed = {
+            field for field in self.HR_FIELDS
+            if field in serializer.validated_data and serializer.validated_data[field] != getattr(serializer.instance, field)
+        }
         if not can_manage_users(user):
             if serializer.instance.pk != user.pk:
                 raise PermissionDenied('You can only edit your own account.')
-            if changes_access:
-                raise PermissionDenied('Only tenant admins can change roles, job roles or deactivate users.')
-        elif changes_access and serializer.instance.pk == user.pk:
+            if changed:
+                raise PermissionDenied('Only tenant admins can change roles, job roles, staff records or deactivate users.')
+        elif changed & {'role', 'is_active'} and serializer.instance.pk == user.pk:
             raise PermissionDenied("You can't change your own role or deactivate yourself.")
         serializer.save()
 
