@@ -244,3 +244,170 @@ test('admins add questions to a questionnaire', async () => {
     text: 'Rate your Python', question_type: 'rating', skill: null, questionnaire: 'q1',
   }));
 });
+
+const TNA_REPORT = {
+  title: 'Training Needs Assessment Report',
+  institution: { id: 't1', name: 'Acme' },
+  scope: { type: 'institution', org_unit: null },
+  period: '2026/27',
+  generated_at: '2026-10-14T10:00:00+00:00',
+  summary: {
+    staff: 3, staff_assessed: 2, staff_with_gaps: 1, staff_without_role: 1, assessment_coverage: 75,
+    gap_score: 36.4, skills_with_gaps: 1, officers_to_train: 1, high_priority_gaps: 1,
+  },
+  methodology: ['Gap = required level minus current level.'],
+  organisational: [{ org_unit: { id: 'o1', name: 'Finance' }, depth: 0, staff: 2, staff_assessed: 2, staff_with_gaps: 1, assessment_coverage: 75, gap_score: 36.4 }],
+  occupational: [{ job_role: { id: 'r1', title: 'Accountant' }, org_unit: { id: 'o1', name: 'Finance' }, staff: 2, staff_assessed: 2, staff_with_gaps: 1, assessment_coverage: 75, gap_score: 36.4, priority_needs: ['IFMIS'] }],
+  training_needs: [{ skill: { id: 's1', name: 'IFMIS', type: 'technical' }, staff_requiring: 2, staff_assessed: 2, officers_to_train: 1, high_priority: 1, average_gap: 1, priority_total: 9.34, priority: 'medium' }],
+  individuals: [{
+    user: { id: 'u2', username: 'alice', name: 'Alice Wanjiku' }, job_role: { id: 'r1', title: 'Accountant' }, org_unit: { id: 'o1', name: 'Finance' },
+    gap_score: 36.4, skills_required: 2, skills_assessed: 2, skills_with_gap: 1, high_priority_gaps: 1,
+    gaps: [{ skill: { id: 's1', name: 'IFMIS' }, gap: 2 }], not_assessed: [],
+  }],
+  projections: [{
+    skill: { id: 's1', name: 'IFMIS' }, officer: { id: 'u2', username: 'alice', name: 'Alice Wanjiku' }, job_role: { id: 'r1', title: 'Accountant' },
+    org_unit: { id: 'o1', name: 'Finance' }, required_level: 4, current_level: 2, rating_source: 'manager', gap: 2, priority_score: 9.34, priority: 'high',
+  }],
+  recommendations: ['Prioritise training in IFMIS (1 officer) in the training projections for this period.'],
+};
+
+test('managers preview the TNA report and can download it', async () => {
+  window.history.pushState({}, '', '/reports/tna');
+  loggedInAs({ id: 'u1', username: 'mo', is_superuser: false, tenant: 't1', role: 'manager' }, { '/reports/tna/': TNA_REPORT });
+  render(<App />);
+  expect(await screen.findByRole('heading', { name: '1. Executive summary' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Financial year')).toHaveValue('2026/27');
+  const projections = screen.getByRole('table', { name: 'Annex: Training projections' });
+  expect(within(projections).getByText('Alice Wanjiku')).toBeInTheDocument();
+  expect(within(projections).getByText('4 · Advanced')).toBeInTheDocument();
+  expect(screen.getByText(/Prioritise training in IFMIS/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'PDF' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Excel' })).toBeEnabled();
+});
+
+test('employees cannot open the TNA report', async () => {
+  window.history.pushState({}, '', '/reports/tna');
+  loggedInAs({ id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' });
+  render(<App />);
+  await waitFor(() => expect(screen.queryByRole('heading', { name: /Training Needs Assessment report/ })).not.toBeInTheDocument());
+  expect(api.get).not.toHaveBeenCalledWith('/reports/tna/', expect.anything());
+});
+
+const PLAN = {
+  id: 'p1', period: '2026/27', status: 'draft', budget: '80000.00', title: 'Annual Training Plan 2026/27',
+  institution: { id: 't1', name: 'Ministry' },
+  summary: { programmes: 1, participants: 2, officers: 2, approved_participants: 1, total_cost: 90000, budget: 80000, balance: -10000 },
+  by_quarter: [
+    { quarter: 1, label: 'Q1 (Jul-Sep)', programmes: 1, participants: 2, cost: 90000 },
+    { quarter: 2, label: 'Q2 (Oct-Dec)', programmes: 0, participants: 0, cost: 0 },
+  ],
+  by_priority: [],
+  by_department: [{ org_unit: { id: 'o1', name: 'Finance' }, participants: 2, cost: 90000 }],
+  attendance: { attended: 1, partial: 0, absent: 0, not_recorded: 0, attendance_rate: 100 },
+  evaluation: { participant_responses: 1, average_reaction: 4.5, average_relevance: 4, tested: 0, average_learning_gain: null, supervisor_evaluations: 1, gaps_closed: 1 },
+  programmes: [{
+    id: 'g1', title: 'IFMIS', skill: { id: 's1', name: 'IFMIS' }, provider: 'Kenya School of Government', delivery_mode: 'local', quarter: 1,
+    start_date: null, end_date: null, venue: '', duration_days: 5, fee: 20000, allowance_per_day: 5000, fixed_cost: 0, priority: 'high',
+    participants: 2, cost_per_participant: 45000, total_cost: 90000, approved: 1, attended: 1,
+  }],
+};
+
+test('admins see the costed training plan against its budget', async () => {
+  window.history.pushState({}, '', '/training-plans/p1');
+  loggedInAs({ id: 'u1', username: 'hr', is_superuser: false, tenant: 't1', role: 'admin' }, { '/training-plans/p1/': PLAN });
+  render(<App />);
+  expect(await screen.findByText(/over the approved budget/)).toHaveTextContent('KES 10,000');
+  const programmes = screen.getByRole('table', { name: 'Programmes' });
+  expect(within(programmes).getByText('IFMIS')).toBeInTheDocument();
+  expect(within(programmes).getByText('KES 45,000')).toBeInTheDocument();
+  expect(within(screen.getByRole('table', { name: 'Cost by department' })).getByText('Finance')).toBeInTheDocument();
+  expect(screen.getByText('1 of 1 evaluated')).toBeInTheDocument();
+
+  api.post.mockResolvedValueOnce({ data: { ...PLAN, created: { programmes: 0, nominations: 1 } } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add from latest gaps' }));
+  expect(await screen.findByText(/Added 0 programmes and 1 nomination/)).toBeInTheDocument();
+  expect(api.post).toHaveBeenCalledWith('/training-plans/p1/generate/');
+  expect(screen.getByRole('button', { name: 'Submit for approval' })).toBeInTheDocument();
+});
+
+test('managers can read the plan but not change it', async () => {
+  window.history.pushState({}, '', '/training-plans/p1');
+  loggedInAs({ id: 'u2', username: 'mo', is_superuser: false, tenant: 't1', role: 'manager' }, { '/training-plans/p1/': PLAN });
+  render(<App />);
+  expect(await screen.findByRole('table', { name: 'Programmes' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Add from latest gaps' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Add programme' })).not.toBeInTheDocument();
+});
+
+test('officers evaluate training they attended on My training', async () => {
+  window.history.pushState({}, '', '/my-training');
+  const nomination = {
+    id: 'n1', user: 'u3', status: 'approved', attendance: 'attended', gap: 2, current_level: 2, required_level: 4, evaluation: null,
+    officer: { id: 'u3', username: 'eve', name: 'Eve Achieng' },
+    programme_detail: { id: 'g1', title: 'IFMIS', period: '2026/27', quarter: 1, provider: 'KSG', venue: '', skill: { id: 's1', name: 'IFMIS' } },
+  };
+  sessionStorage.setItem('access_token', 'token');
+  api.get.mockImplementation((url) => {
+    if (url === '/users/me/') return Promise.resolve({ data: { id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' } });
+    if (url === '/training-nominations/') return Promise.resolve({ data: [nomination] });
+    return Promise.resolve({ data: [] });
+  });
+  api.post.mockResolvedValue({ data: {} });
+  render(<App />);
+  const table = await screen.findByRole('table', { name: 'My training' });
+  expect(await within(table).findByText('IFMIS: 2 · Basic → 4 · Advanced')).toBeInTheDocument();
+  fireEvent.click(within(table).getByRole('button', { name: 'Evaluate' }));
+  fireEvent.click(await screen.findByLabelText('5 Stars', { selector: 'input[name="How good was the training overall?"]' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith('/training-nominations/n1/evaluation/', expect.objectContaining({ reaction_rating: 5 })));
+});
+
+test('employees cannot open training plans', async () => {
+  window.history.pushState({}, '', '/training-plans');
+  loggedInAs({ id: 'u3', username: 'eve', is_superuser: false, tenant: 't1', role: 'employee' });
+  render(<App />);
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Training plans' })).not.toBeInTheDocument());
+  expect(api.get).not.toHaveBeenCalledWith('/training-plans/');
+});
+
+const KENYA_ADMIN = {
+  id: 'u1', username: 'ada', is_superuser: false, tenant: 't1', role: 'admin',
+  terms: { grade: 'Job Group', grades: 'Job Groups', job_family: 'Cadre', job_families: 'Cadres', staff_number: 'P/F No.' },
+};
+
+test("pages use the organisation's own words for grades and job families", async () => {
+  window.history.pushState({}, '', '/classification');
+  loggedInAs(KENYA_ADMIN, { '/grades/': [{ id: 'g1', code: 'K', name: 'Job Group K', rank: 10, staff_count: 4 }] });
+  render(<App />);
+  expect(await screen.findByRole('tab', { name: 'Job Groups' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Cadres' })).toBeInTheDocument();
+  expect(await screen.findByText('Job Group K')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /add job group/i })).toBeInTheDocument();
+});
+
+test('admins check a staff file before importing it', async () => {
+  window.history.pushState({}, '', '/imports');
+  loggedInAs(KENYA_ADMIN);
+  const row = (n, key, action, extra = {}) => ({ row: n, key, label: `Officer ${key}`, action, changes: [], errors: [], warnings: [], ...extra });
+  const checked = {
+    kind: 'staff', committed: false,
+    counts: { created: 1, updated: 0, unchanged: 1, error: 1 },
+    rows: [row(2, '1001', 'created'), row(3, '1002', 'unchanged'), row(4, '', 'error', { errors: ['Staff number is empty.'] })],
+    added: { departments: ['Finance > Accounts'] }, not_in_file: [{ id: 'u9', staff_number: '0999', name: 'Old Hand' }], extra_columns: ['Station'],
+  };
+  api.post.mockResolvedValueOnce({ data: checked }).mockResolvedValueOnce({ data: { ...checked, committed: true, run: 'r1' } });
+  render(<App />);
+  expect(await screen.findByRole('heading', { name: 'Import' })).toBeInTheDocument();
+  const file = new File(['PF No.,Surname'], 'hris.csv', { type: 'text/csv' });
+  fireEvent.change(screen.getByLabelText('Staff file'), { target: { files: [file] } });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Check file' })[0]);
+  expect(await screen.findByText(/Nothing has been saved yet/)).toBeInTheDocument();
+  expect(screen.getByText('Staff number is empty.')).toBeInTheDocument();
+  expect(screen.queryByText('Officer 1002')).not.toBeInTheDocument();
+  expect(screen.getByText(/Old Hand \(0999\)/)).toBeInTheDocument();
+  expect(screen.getByText(/Departments \(1\): Finance > Accounts/)).toBeInTheDocument();
+  expect(api.post.mock.calls[0][1].get('commit')).toBe('false');
+  fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+  expect(await screen.findByText(/Imported\. Rows with errors were skipped/)).toBeInTheDocument();
+  expect(api.post.mock.calls[1][1].get('commit')).toBe('true');
+});

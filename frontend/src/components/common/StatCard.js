@@ -19,7 +19,7 @@ export default function StatCard({ label, value, to, suffix }) {
 
 StatCard.propTypes = {
   label: PropTypes.string.isRequired,
-  value: PropTypes.number,
+  value: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
   to: PropTypes.string,
   suffix: PropTypes.string,
 };

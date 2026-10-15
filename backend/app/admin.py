@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin
 from django.utils.html import format_html
 
 from .invitations import accept_url, send_invitation
-from .models import Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation
+from .models import Grade, JobFamily, CompetencyFramework, ImportRun, Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
 
 
 class InvitationInline(admin.TabularInline):
@@ -57,9 +57,14 @@ class InvitationAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class LSMSUserAdmin(UserAdmin):
-    list_display = ('username', 'email', 'tenant', 'role', 'is_superuser')
+    list_display = ('username', 'staff_number', 'email', 'tenant', 'role', 'is_superuser')
     list_filter = ('tenant', 'role', 'is_superuser')
-    fieldsets = UserAdmin.fieldsets + (('Organisation', {'fields': ('tenant', 'role', 'job_role')}),)
+    search_fields = UserAdmin.search_fields + ('staff_number',)
+    fieldsets = UserAdmin.fieldsets + (
+        ('Organisation', {'fields': ('tenant', 'role', 'job_role')}),
+        ('Staff record', {'fields': ('staff_number', 'supervisor', 'grade', 'job_family', 'employment_terms',
+                                     'date_of_appointment', 'gender', 'disability', 'extra')}),
+    )
     add_fieldsets = UserAdmin.add_fieldsets + (('Organisation', {'fields': ('tenant', 'role', 'job_role')}),)
 
 
@@ -73,3 +78,11 @@ admin.site.register(Questionnaire)
 admin.site.register(Question)
 admin.site.register(QuestionResponse)
 admin.site.register(QuestionChoice)
+admin.site.register(TrainingPlan)
+admin.site.register(TrainingProgramme)
+admin.site.register(TrainingNomination)
+admin.site.register(TrainingEvaluation)
+admin.site.register(Grade)
+admin.site.register(JobFamily)
+admin.site.register(CompetencyFramework)
+admin.site.register(ImportRun)

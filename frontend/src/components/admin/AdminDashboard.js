@@ -15,6 +15,7 @@ const NEXT_STEPS = [
   { label: 'Invite your team', help: 'Send invitations by email, then place each person in a job role.', to: '/people' },
   { label: 'Run a questionnaire', help: 'Collect self ratings with rating questions linked to skills.', to: '/questionnaires' },
   { label: 'Review ratings', help: 'Add manager ratings, which count over self ratings in gap scores.', to: '/ratings' },
+  { label: 'Plan the training', help: 'Build the costed annual training plan from the gaps, then track attendance and evaluation.', to: '/training-plans' },
 ];
 
 // A tenant admin's home: their organisation at a glance and where to go next.

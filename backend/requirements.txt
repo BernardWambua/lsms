@@ -8,3 +8,5 @@ PyJWT==2.9.0
 asgiref==3.8.1
 sqlparse==0.5.3
 tzdata==2025.2
+openpyxl==3.1.5
+reportlab==4.4.10

@@ -21,6 +21,9 @@ class Tenant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     industry = models.CharField(max_length=255, blank=True)
+    # The organisation's own words for LSMS's generic terms, e.g. {"grade": "Job Group"}.
+    # Keys the tenant hasn't set fall back to the defaults in packs.DEFAULT_TERMS.
+    terminology = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
@@ -40,6 +43,93 @@ class User(AbstractUser):
     # the role's skill profile is what their gaps are measured against.
     job_role = models.ForeignKey('JobRole', null=True, blank=True, on_delete=models.SET_NULL, related_name='holders')
 
+    # The staff record as the organisation's HR system holds it. Only what TNA
+    # reporting needs: no national ID, date of birth or ethnicity.
+    staff_number = models.CharField(max_length=50, blank=True)
+    supervisor = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='supervisees')
+    grade = models.ForeignKey('Grade', null=True, blank=True, on_delete=models.SET_NULL, related_name='staff')
+    job_family = models.ForeignKey('JobFamily', null=True, blank=True, on_delete=models.SET_NULL, related_name='staff')
+    TERMS_CHOICES = [
+        ('permanent', 'Permanent and pensionable'),
+        ('contract', 'Contract'),
+        ('temporary', 'Temporary'),
+        ('intern', 'Intern'),
+    ]
+    employment_terms = models.CharField(max_length=20, choices=TERMS_CHOICES, blank=True)
+    date_of_appointment = models.DateField(null=True, blank=True)
+    GENDER_CHOICES = [('female', 'Female'), ('male', 'Male'), ('other', 'Other')]
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
+    disability = models.BooleanField(null=True, blank=True)
+    # Other columns from the HR export the organisation chose to keep (station, county, ...).
+    extra = models.JSONField(default=dict, blank=True)
+
+    class Meta(AbstractUser.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'staff_number'], condition=~models.Q(staff_number=''), name='unique_staff_number_per_tenant',
+            ),
+        ]
+
+    @property
+    def staff_ref(self):
+        """The number reports show for this person: their staff number, or their username until they have one."""
+        return self.staff_number or self.username
+
+
+class Grade(models.Model):
+    """
+    A salary grade or level (a Job Group in the Kenyan public service, a band in a
+    company). ``rank`` orders grades from junior to senior; ``aliases`` are other
+    codes that mean the same grade, so imports using another scheme still match.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    code = models.CharField(max_length=20)
+    name = models.CharField(max_length=100, blank=True)
+    rank = models.PositiveSmallIntegerField(default=0)
+    aliases = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['rank', 'code']
+        constraints = [models.UniqueConstraint(fields=['tenant', 'code'], name='unique_grade_code_per_tenant')]
+
+    def __str__(self):
+        return self.name or self.code
+
+
+class JobFamily(models.Model):
+    """An occupational group: a cadre or scheme of service in the public service, a job family in a company."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    code = models.CharField(max_length=20, blank=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'job families'
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name'], name='unique_job_family_per_tenant')]
+
+    def __str__(self):
+        return self.name
+
+
+class CompetencyFramework(models.Model):
+    """A published set of competencies (e.g. a public service commission's framework) that skills come from."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    issuer = models.CharField(max_length=255, blank=True)
+    version = models.CharField(max_length=50, blank=True)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name'], name='unique_framework_per_tenant')]
+
+    def __str__(self):
+        return self.name
+
 class OrgUnit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
@@ -55,6 +145,8 @@ class JobRole(models.Model):
     org_unit = models.ForeignKey(OrgUnit, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    grade = models.ForeignKey(Grade, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
+    job_family = models.ForeignKey(JobFamily, null=True, blank=True, on_delete=models.SET_NULL, related_name='job_roles')
     
     def __str__(self):
         return self.title
@@ -64,11 +156,19 @@ class Skill(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    # The category the skill sits in; competency frameworks usually split into core,
+    # functional/technical and leadership competencies.
     SKILL_TYPE_CHOICES = [
+        ('core', 'Core'),
+        ('functional', 'Functional'),
         ('technical', 'Technical'),
+        ('leadership', 'Leadership'),
         ('soft', 'Soft'),
     ]
     type = models.CharField(max_length=20, choices=SKILL_TYPE_CHOICES, default='technical')
+    framework = models.ForeignKey(CompetencyFramework, null=True, blank=True, on_delete=models.SET_NULL, related_name='skills')
+    # The competency's code in its framework, so re-importing a framework updates rather than duplicates.
+    code = models.CharField(max_length=50, blank=True)
     difficulty = models.IntegerField()
     usage_frequency = models.IntegerField()
     impact_if_missing = models.IntegerField()
@@ -193,3 +293,158 @@ class Invitation(models.Model):
     @property
     def is_pending(self):
         return self.accepted_at is None and self.expires_at > timezone.now()
+
+
+# Training plan: the costed annual plan built from the TNA gaps, the officers
+# nominated to each programme, their attendance and the training evaluation.
+
+# Quarters of the Kenyan government financial year (July to June).
+QUARTERS = [
+    (1, 'Q1 (Jul-Sep)'),
+    (2, 'Q2 (Oct-Dec)'),
+    (3, 'Q3 (Jan-Mar)'),
+    (4, 'Q4 (Apr-Jun)'),
+]
+PRIORITY_CHOICES = [('high', 'High'), ('medium', 'Medium'), ('low', 'Low')]
+MONEY = {'max_digits': 14, 'decimal_places': 2}
+
+
+class TrainingPlan(models.Model):
+    """One institution's annual training plan for a financial year, costed in KES."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    period = models.CharField(max_length=7, help_text='Financial year, e.g. 2026/27')
+    title = models.CharField(max_length=255, blank=True)
+    # The approved training budget the plan has to fit within.
+    budget = models.DecimalField(null=True, blank=True, **MONEY)
+    # Starting costs for programmes generated from the gaps; HR adjusts each programme afterwards.
+    default_fee = models.DecimalField(default=0, **MONEY)
+    default_allowance_per_day = models.DecimalField(default=0, **MONEY)
+    default_duration_days = models.PositiveSmallIntegerField(default=5)
+    STATUS_CHOICES = [('draft', 'Draft'), ('submitted', 'Submitted'), ('approved', 'Approved')]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_plans_created')
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_plans_approved')
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['tenant', 'period'], name='one_training_plan_per_period')]
+
+    def __str__(self):
+        return self.title or f'Training plan {self.period}'
+
+
+class TrainingProgramme(models.Model):
+    """
+    One course in the plan. Each officer costs the fee plus the daily allowance for
+    every day of the course; the fixed cost (facilitators, venue) is shared.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    plan = models.ForeignKey(TrainingPlan, on_delete=models.CASCADE, related_name='programmes')
+    skill = models.ForeignKey(Skill, null=True, blank=True, on_delete=models.SET_NULL, related_name='training_programmes')
+    title = models.CharField(max_length=255)
+    provider = models.CharField(max_length=255, blank=True)
+    DELIVERY_CHOICES = [
+        ('in_house', 'In-house'),
+        ('local', 'External (local)'),
+        ('foreign', 'External (foreign)'),
+        ('online', 'Online'),
+    ]
+    delivery_mode = models.CharField(max_length=20, choices=DELIVERY_CHOICES, default='in_house')
+    quarter = models.PositiveSmallIntegerField(choices=QUARTERS, default=1)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    venue = models.CharField(max_length=255, blank=True)
+    duration_days = models.PositiveSmallIntegerField(default=5)
+    fee = models.DecimalField(default=0, help_text='Course fee per participant (KES)', **MONEY)
+    allowance_per_day = models.DecimalField(default=0, help_text='Subsistence allowance per participant per day (KES)', **MONEY)
+    fixed_cost = models.DecimalField(default=0, help_text='Facilitation, venue and other shared costs (KES)', **MONEY)
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='medium')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def cost_per_participant(self):
+        return self.fee + self.allowance_per_day * self.duration_days
+
+
+class TrainingNomination(models.Model):
+    """An officer nominated to a programme, with the gap that put them there and whether they attended."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    programme = models.ForeignKey(TrainingProgramme, on_delete=models.CASCADE, related_name='nominations')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='training_nominations')
+    STATUS_CHOICES = [
+        ('proposed', 'Proposed'),
+        ('approved', 'Approved'),
+        ('declined', 'Declined'),
+        ('withdrawn', 'Withdrawn'),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='proposed')
+    SOURCE_CHOICES = [('gap', 'Skill gap'), ('manual', 'Nominated')]
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='manual')
+    # The gap engine's figures when the officer was nominated, so the plan keeps its evidence.
+    required_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    current_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    gap = models.PositiveSmallIntegerField(null=True, blank=True)
+    priority_score = models.FloatField(null=True, blank=True)
+    ATTENDANCE_CHOICES = [
+        ('not_recorded', 'Not recorded'),
+        ('attended', 'Attended'),
+        ('partial', 'Partly attended'),
+        ('absent', 'Absent'),
+    ]
+    attendance = models.CharField(max_length=20, choices=ATTENDANCE_CHOICES, default='not_recorded')
+    days_attended = models.PositiveSmallIntegerField(null=True, blank=True)
+    nominated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_nominations_made')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Nominations that still count towards the plan's participants and cost.
+    ACTIVE = ('proposed', 'approved')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['programme', 'user'], name='one_nomination_per_programme')]
+
+    def __str__(self):
+        return f'{self.user} -> {self.programme}'
+
+
+class TrainingEvaluation(models.Model):
+    """
+    How a nomination's training went, on the Kirkpatrick levels: the participant's
+    reaction (level 1), test scores before and after (level 2), and the supervisor's
+    rating of the skill back on the job (level 3), which becomes their manager rating.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    nomination = models.OneToOneField(TrainingNomination, on_delete=models.CASCADE, related_name='evaluation')
+    reaction_rating = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    relevance_rating = models.PositiveSmallIntegerField(null=True, blank=True, validators=SCORE_VALIDATORS)
+    participant_comments = models.TextField(blank=True)
+    participant_submitted_at = models.DateTimeField(null=True, blank=True)
+    pre_test_score = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(100)])
+    post_test_score = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(100)])
+    post_training_level = models.PositiveSmallIntegerField(null=True, blank=True, choices=PROFICIENCY_LEVELS, validators=SCORE_VALIDATORS)
+    supervisor_comments = models.TextField(blank=True)
+    supervisor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='training_evaluations_given')
+    supervisor_submitted_at = models.DateTimeField(null=True, blank=True)
+
+
+class ImportRun(models.Model):
+    """One upload of a staff or competency file: who ran it, what it changed, and the rows it couldn't take."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    KIND_CHOICES = [('staff', 'Staff'), ('competencies', 'Competency framework')]
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    file_name = models.CharField(max_length=255)
+    counts = models.JSONField(default=dict)
+    errors = models.JSONField(default=list)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='import_runs')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']

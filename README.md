@@ -23,6 +23,8 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
+For a demo, `python manage.py seed_demo` loads **Demo State Department**, an invented institution with 36 officers, a sample competency framework, ratings and a training plan, and prints the demo logins (HR admin, manager and employee). `--reset` rebuilds it; `--samples <folder>` also saves the filled staff and competency import files for trying the upload yourself. All of it is made-up data.
+
 Settings come from environment variables; see `backend/.env.example`. Without them the app runs with development defaults.
 
 The API lives under `/api/`. Get a token with `POST /api/token/` and send it as `Authorization: Bearer <token>`.
@@ -116,7 +118,26 @@ Skills nobody has rated are reported as not assessed and left out of the scores;
 - **Questionnaires** (`/questionnaires`) are built by admins: questions are rating (1 to 5), multiple choice, true/false or text. Everyone else can read and answer them.
 - **Role profiles:** open a job role (`/job-roles/<id>`) to set the skills it requires, the level, and any role-specific DIF scores. Admins place people in job roles on the People page.
 
+### TNA report
+
+Admins and managers open **TNA report** (`/reports/tna`) to preview the Training Needs Assessment for the whole institution or one department and download it as PDF or Excel. The report is built from the gap engine (`backend/app/tna_report.py`) and follows the usual public-service TNA layout: executive summary, methodology, organisational (department), occupational (job role) and individual analysis, prioritised training needs, recommendations, a sign-off block for the Head of HRM&D and the Authorised Officer, and an annex of training projections (officers to train per skill, highest priority first) for the Human Resource Management Advisory Committee.
+
+`GET /api/reports/tna/` returns the report as JSON. Parameters: `unit=<org unit id>` for one department and the units below it, `period=2026/27` for the financial year (defaults to the current July to June year), `download=pdf` or `download=xlsx` for a file, and `tenant=<id>` for super admins.
+
 List endpoints accept filters: `job-role-skills?job_role=`, `ratings?user=&skill=`, `questions?questionnaire=`, `question-choices?question=` or `?question__questionnaire=`, `question-responses?question=&question__questionnaire=&user=`.
+
+## Staff records, imports and sector packs
+
+LSMS stays general: the models know **grades**, **job families**, **competency frameworks** and **staff numbers**, and each organisation names them in its own words (`Tenant.terminology`, edited on **Classification > Wording**; `GET /api/users/me/` returns the merged `terms`). A **sector pack** (`backend/app/packs.py`) fills these in when an organisation is created: the *Kenya public service* pack loads Job Groups A to T, common cadres and the wording "Job Group", "Cadre", "P/F No." and "MDA". A blank organisation keeps the generic words.
+
+Each person can carry a staff record: staff number (unique per organisation, shown as P/F No. in the TNA report and training plan), supervisor, grade, job family, terms of service, date of appointment, gender, disability, and `extra` for other HR columns. National ID, date of birth and ethnicity are deliberately not stored.
+
+**Import** (`/imports`, admins only) loads two kinds of spreadsheet, each with a downloadable Excel template:
+
+- **Staff**: one row per officer. Matched on staff number (or email the first time), so the same file can be uploaded again whenever HR updates it. Departments (written as a path, `Finance Directorate > Accounts Division`), posts, grades and job families that don't exist yet are created. Header names from HR exports (`PF No.`, `Surname`, `Job Group`, `Cadre`, `Reports To`...) are recognised, and unknown columns are kept in `extra`. Nobody is deleted; people missing from the file are listed for HR to deactivate. Imported staff have no password until they're given one.
+- **Competency framework**: the competencies (matched on code within their framework), plus an optional *Role requirements* sheet with the level each post requires, which becomes the post's skill profile.
+
+Every upload is checked first (`POST /api/imports/<staff|competencies>/` with `file`): the response says what each row would do and nothing is saved. Sending `commit=true` runs the import and records it (`GET /api/import-runs/`). Templates: `GET /api/imports/<kind>/template/`. Grades, job families and frameworks also have their own endpoints: `/api/grades/`, `/api/job-families/`, `/api/competency-frameworks/`.
 
 ## Conventions
 

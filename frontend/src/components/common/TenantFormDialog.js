@@ -1,17 +1,17 @@
 import { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, TextField, Typography } from '@mui/material';
+import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, TextField, Typography } from '@mui/material';
 import api from '../../api';
 import { errorMessage } from '../../utils/errors';
 
 // Create an organisation (super admins, with its first admin's email) or edit one's details.
 export default function TenantFormDialog({ open, tenant, onClose, onSaved }) {
-  const [form, setForm] = useState({ name: '', industry: '', admin_email: '' });
+  const [form, setForm] = useState({ name: '', industry: '', admin_email: '', pack: '' });
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (open) {
-      setForm({ name: tenant?.name || '', industry: tenant?.industry || '', admin_email: '' });
+      setForm({ name: tenant?.name || '', industry: tenant?.industry || '', admin_email: '', pack: '' });
       setError('');
     }
   }, [open, tenant]);
@@ -21,7 +21,9 @@ export default function TenantFormDialog({ open, tenant, onClose, onSaved }) {
     try {
       const { data } = tenant
         ? await api.patch(`/tenants/${tenant.id}/`, { name: form.name, industry: form.industry })
-        : await api.post('/tenants/', { name: form.name, industry: form.industry, ...(form.admin_email ? { admin_email: form.admin_email } : {}) });
+        : await api.post('/tenants/', {
+          name: form.name, industry: form.industry, pack: form.pack, ...(form.admin_email ? { admin_email: form.admin_email } : {}),
+        });
       onSaved(data);
     } catch (err) {
       setError(errorMessage(err));
@@ -37,6 +39,16 @@ export default function TenantFormDialog({ open, tenant, onClose, onSaved }) {
         <DialogContent>
           <TextField label="Name" value={form.name} onChange={update('name')} required fullWidth margin="normal" autoFocus />
           <TextField label="Industry" value={form.industry} onChange={update('industry')} fullWidth margin="normal" />
+          {!tenant && (
+            <TextField
+              select label="Start from" value={form.pack} onChange={update('pack')} fullWidth margin="normal"
+              helperText="A sector pack loads its grades, job families and wording. Everything can be changed afterwards."
+              slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+            >
+              <MenuItem value="">Blank organisation</MenuItem>
+              <MenuItem value="kenya_public_service">Kenya public service (Job Groups, cadres, P/F No.)</MenuItem>
+            </TextField>
+          )}
           {!tenant && (
             <TextField
               label="First admin's email"
