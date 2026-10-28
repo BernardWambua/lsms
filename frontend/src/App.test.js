@@ -49,7 +49,8 @@ test('tenant admins land on their organisation dashboard with setup links', asyn
   render(<App />);
   expect(await screen.findByRole('heading', { name: 'Acme' })).toBeInTheDocument();
   expect(screen.getByText('Set up org units')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'People' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Organisation' }));
+  expect(await screen.findByRole('menuitem', { name: 'People' })).toBeInTheDocument();
 });
 
 test('tenant admins can add org units', async () => {
@@ -410,4 +411,52 @@ test('admins check a staff file before importing it', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Import' }));
   expect(await screen.findByText(/Imported\. Rows with errors were skipped/)).toBeInTheDocument();
   expect(api.post.mock.calls[1][1].get('commit')).toBe('true');
+});
+
+test('the navbar groups admin links into menus and marks the active group', async () => {
+  window.history.pushState({}, '', '/job-roles/r1');
+  loggedInAs(ADMIN);
+  render(<App />);
+  const organisation = await screen.findByRole('button', { name: 'Organisation' });
+  ['Skills', 'Training', 'Reports', 'Admin'].forEach((name) => expect(screen.getByRole('button', { name })).toBeInTheDocument());
+  expect(screen.queryByRole('link', { name: 'People' })).not.toBeInTheDocument();
+  expect(organisation).toHaveStyle({ backgroundColor: 'rgba(255,255,255,0.15)' });
+  expect(screen.getByRole('button', { name: 'Skills' })).not.toHaveStyle({ backgroundColor: 'rgba(255,255,255,0.15)' });
+
+  fireEvent.click(organisation);
+  const menu = await screen.findByRole('menu');
+  expect(within(menu).getByRole('menuitem', { name: 'Job roles' })).toHaveClass('Mui-selected');
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'People' }));
+  expect(window.location.pathname).toBe('/people');
+});
+
+test('employees only see the menu groups that have links for them', async () => {
+  loggedInAs(EMPLOYEE);
+  render(<App />);
+  expect(await screen.findByRole('button', { name: 'Skills' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Organisation' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Training' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reports' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Admin' })).not.toBeInTheDocument();
+});
+
+test('on narrow screens the navbar links move into a drawer', async () => {
+  const original = window.matchMedia;
+  window.matchMedia = (query) => ({
+    matches: query.includes('max-width'), media: query, addListener() {}, removeListener() {},
+    addEventListener() {}, removeEventListener() {}, onchange: null, dispatchEvent: () => false,
+  });
+  try {
+    window.history.pushState({}, '', '/ratings');
+    loggedInAs(MANAGER, { '/gaps/institution/': { people: [], staff_without_role: 0 } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    const drawer = await screen.findByRole('navigation', { name: 'Main menu' });
+    expect(within(drawer).getByText('Reports')).toBeInTheDocument();
+    expect(within(drawer).getByRole('link', { name: 'Staff ratings' })).toHaveClass('Mui-selected');
+    fireEvent.click(within(drawer).getByRole('link', { name: 'My training' }));
+    expect(window.location.pathname).toBe('/my-training');
+  } finally {
+    window.matchMedia = original;
+  }
 });
