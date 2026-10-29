@@ -127,6 +127,9 @@ export default function TNAReportPage() {
 
       {report && (
         <>
+          {report.watermark && (
+            <Alert severity="info" sx={{ mb: 2 }}>Your organisation is on a pilot licence, so downloaded reports carry an evaluation watermark.</Alert>
+          )}
           <Typography variant="h6">1. Executive summary</Typography>
           <Typography color="text.secondary" mb={1}>
             {report.institution.name} · {report.scope.org_unit ? `${report.scope.org_unit.name} and the units below it` : 'Whole institution'} · FY {report.period}

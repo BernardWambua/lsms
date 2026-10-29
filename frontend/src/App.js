@@ -28,6 +28,9 @@ import ProgrammePage from "./components/training/ProgrammePage";
 import MyTrainingPage from "./components/training/MyTrainingPage";
 import ImportPage from "./components/imports/ImportPage";
 import ClassificationPage from "./components/admin/ClassificationPage";
+import { LicenseProvider } from "./components/license/licenseContext";
+import LicenseBanner from "./components/license/LicenseBanner";
+import LicensePage from "./components/license/LicensePage";
 import { jobRoles, ORG_UNITS, QUESTIONNAIRES, skills } from "./components/structure/resources";
 import { useTerms } from "./utils/terms";
 
@@ -74,36 +77,40 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <AuthProvider>
-        <Router>
-          <Navbar />
-          <Container maxWidth="lg" sx={{ py: 4 }}>
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/accept-invite/:token" element={<AcceptInvite />} />
-              <Route path="/tenants/:id" element={<RequireRole roles={['superadmin']}><TenantDetail /></RequireRole>} />
-              <Route path="/org-structure" element={<RequireRole roles={['admin']}><OrgStructurePage /></RequireRole>} />
-              <Route path="/people" element={<RequireRole roles={['admin']}><PeoplePage /></RequireRole>} />
-              <Route path="/imports" element={<RequireRole roles={['admin']}><ImportPage /></RequireRole>} />
-              <Route path="/classification" element={<RequireRole roles={['admin']}><ClassificationPage /></RequireRole>} />
-              <Route path="/org-units" element={<StructurePage resource={ORG_UNITS} />} />
-              <Route path="/job-roles" element={<StructurePage resource={jobRoles} rowLink={(role) => `/job-roles/${role.id}`} />} />
-              <Route path="/job-roles/:id" element={tenantPage(<RoleProfilePage />)} />
-              <Route path="/skills" element={<StructurePage resource={skills} />} />
-              <Route path="/questionnaires" element={<StructurePage resource={QUESTIONNAIRES} rowLink={(q) => `/questionnaires/${q.id}`} />} />
-              <Route path="/questionnaires/:id" element={tenantPage(<QuestionnairePage />)} />
-              <Route path="/questionnaires/:id/answer" element={tenantPage(<AnswerQuestionnaire />)} />
-              <Route path="/my-skills" element={tenantPage(<MySkillsPage />)} />
-              <Route path="/ratings" element={<RequireRole roles={REVIEWERS}><TeamRatingsPage /></RequireRole>} />
-              <Route path="/ratings/:id" element={<RequireRole roles={REVIEWERS}><PersonRatingsPage /></RequireRole>} />
-              <Route path="/reports/tna" element={<RequireRole roles={REVIEWERS}><TNAReportPage /></RequireRole>} />
-              <Route path="/training-plans" element={<RequireRole roles={REVIEWERS}><TrainingPlansPage /></RequireRole>} />
-              <Route path="/training-plans/:id" element={<RequireRole roles={REVIEWERS}><TrainingPlanPage /></RequireRole>} />
-              <Route path="/training-programmes/:id" element={<RequireRole roles={REVIEWERS}><ProgrammePage /></RequireRole>} />
-              <Route path="/my-training" element={tenantPage(<MyTrainingPage />)} />
-            </Routes>
-          </Container>
-        </Router>
+        <LicenseProvider>
+          <Router>
+            <Navbar />
+            <Container maxWidth="lg" sx={{ py: 4 }}>
+              <LicenseBanner />
+              <Routes>
+                <Route path="/" element={<Home />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+                <Route path="/tenants/:id" element={<RequireRole roles={['superadmin']}><TenantDetail /></RequireRole>} />
+                <Route path="/org-structure" element={<RequireRole roles={['admin']}><OrgStructurePage /></RequireRole>} />
+                <Route path="/people" element={<RequireRole roles={['admin']}><PeoplePage /></RequireRole>} />
+                <Route path="/imports" element={<RequireRole roles={['admin']}><ImportPage /></RequireRole>} />
+                <Route path="/classification" element={<RequireRole roles={['admin']}><ClassificationPage /></RequireRole>} />
+                <Route path="/license" element={<RequireRole roles={['admin']}><LicensePage /></RequireRole>} />
+                <Route path="/org-units" element={<StructurePage resource={ORG_UNITS} />} />
+                <Route path="/job-roles" element={<StructurePage resource={jobRoles} rowLink={(role) => `/job-roles/${role.id}`} />} />
+                <Route path="/job-roles/:id" element={tenantPage(<RoleProfilePage />)} />
+                <Route path="/skills" element={<StructurePage resource={skills} />} />
+                <Route path="/questionnaires" element={<StructurePage resource={QUESTIONNAIRES} rowLink={(q) => `/questionnaires/${q.id}`} />} />
+                <Route path="/questionnaires/:id" element={tenantPage(<QuestionnairePage />)} />
+                <Route path="/questionnaires/:id/answer" element={tenantPage(<AnswerQuestionnaire />)} />
+                <Route path="/my-skills" element={tenantPage(<MySkillsPage />)} />
+                <Route path="/ratings" element={<RequireRole roles={REVIEWERS}><TeamRatingsPage /></RequireRole>} />
+                <Route path="/ratings/:id" element={<RequireRole roles={REVIEWERS}><PersonRatingsPage /></RequireRole>} />
+                <Route path="/reports/tna" element={<RequireRole roles={REVIEWERS}><TNAReportPage /></RequireRole>} />
+                <Route path="/training-plans" element={<RequireRole roles={REVIEWERS}><TrainingPlansPage /></RequireRole>} />
+                <Route path="/training-plans/:id" element={<RequireRole roles={REVIEWERS}><TrainingPlanPage /></RequireRole>} />
+                <Route path="/training-programmes/:id" element={<RequireRole roles={REVIEWERS}><ProgrammePage /></RequireRole>} />
+                <Route path="/my-training" element={tenantPage(<MyTrainingPage />)} />
+              </Routes>
+            </Container>
+          </Router>
+        </LicenseProvider>
       </AuthProvider>
     </ThemeProvider>
   );

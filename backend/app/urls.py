@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import GradeViewSet, JobFamilyViewSet, CompetencyFrameworkViewSet, ImportRunViewSet, ImportView, ImportTemplateView, SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView, TrainingPlanViewSet, TrainingProgrammeViewSet, TrainingNominationViewSet
+from .views import GradeViewSet, JobFamilyViewSet, CompetencyFrameworkViewSet, ImportRunViewSet, ImportView, ImportTemplateView, SkillViewSet, JobRoleViewSet, JobRoleSkillViewSet, EmployeeSkillRatingViewSet, TrainingCalendarViewSet, OrgUnitViewSet, TenantViewSet, QuestionnaireViewSet, QuestionViewSet, QuestionChoiceViewSet, QuestionResponseViewSet, UserViewSet, InvitationViewSet, AcceptInvitationView, OrgStructureView, MyGapsView, PersonGapsView, DepartmentGapsView, InstitutionGapsView, TNAReportView, LicenseView, TrainingPlanViewSet, TrainingProgrammeViewSet, TrainingNominationViewSet
 
 router = DefaultRouter()
 router.register(r'skills', SkillViewSet)
@@ -30,6 +30,7 @@ urlpatterns = [
     path('gaps/people/<uuid:pk>/', PersonGapsView.as_view(), name='person_gaps'),
     path('gaps/departments/<uuid:pk>/', DepartmentGapsView.as_view(), name='department_gaps'),
     path('gaps/institution/', InstitutionGapsView.as_view(), name='institution_gaps'),
+    path('license/', LicenseView.as_view(), name='license'),
     path('reports/tna/', TNAReportView.as_view(), name='tna_report'),
     path('imports/<str:kind>/template/', ImportTemplateView.as_view(), name='import_template'),
     path('imports/<str:kind>/', ImportView.as_view(), name='import'),

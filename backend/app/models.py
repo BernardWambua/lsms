@@ -25,7 +25,15 @@ class Tenant(models.Model):
     # Keys the tenant hasn't set fall back to the defaults in packs.DEFAULT_TERMS.
     terminology = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
+    def save(self, *args, **kwargs):
+        adding = self._state.adding
+        super().save(*args, **kwargs)
+        if adding:
+            # Every new organisation starts on a free pilot; a super admin upgrades it when the LPO arrives.
+            from .licensing import issue_pilot
+            issue_pilot(self)
+
     def __str__(self):
         return self.name
 
@@ -448,3 +456,52 @@ class ImportRun(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+# Licensing: each organisation holds one annual licence, bought on an LPO and
+# priced by its staff headcount band. The plans and the rules for what an
+# expired licence still allows live in licensing.py.
+
+class License(models.Model):
+    """An organisation's licence: its plan, headcount band, term and the procurement paperwork behind it."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name='license')
+    PLAN_CHOICES = [('pilot', 'Pilot'), ('standard', 'Standard'), ('enterprise', 'Enterprise')]
+    plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='pilot')
+    BAND_CHOICES = [
+        ('small', 'Small (up to 300 staff)'),
+        ('medium', 'Medium (301 to 1,500 staff)'),
+        ('large', 'Large (1,501 to 5,000 staff)'),
+        ('unlimited', 'Enterprise (no staff limit)'),
+    ]
+    band = models.CharField(max_length=20, choices=BAND_CHOICES, default='small')
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    # Full access carries on this long after ends_on while the renewal LPO goes through.
+    grace_days = models.PositiveSmallIntegerField(default=30)
+    suspended = models.BooleanField(default=False, help_text='Makes LSMS read-only for this organisation straight away.')
+    suspended_reason = models.CharField(max_length=255, blank=True)
+    lpo_number = models.CharField('LPO number', max_length=100, blank=True)
+    invoice_number = models.CharField(max_length=100, blank=True)
+    amount = models.DecimalField('Amount (KES, excl. VAT)', null=True, blank=True, **MONEY)
+    paid_on = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.tenant} ({self.get_plan_display()}, to {self.ends_on:%d %b %Y})'
+
+
+class LicenseEvent(models.Model):
+    """The licence's history: issued, renewed, changed or suspended, by whom and when."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    license = models.ForeignKey(License, on_delete=models.CASCADE, related_name='events')
+    summary = models.CharField(max_length=500)
+    by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='license_events')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.summary

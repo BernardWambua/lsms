@@ -15,7 +15,8 @@ from .serializers import GradeSerializer, JobFamilySerializer, CompetencyFramewo
 from .invitations import create_invitation, accept_invitation, InvitationUnavailable
 from .tenancy import scope_to_tenant
 from .gaps import GapEngine
-from . import imports, tna_report, training_plan
+from . import imports, licensing, tna_report, training_plan
+from .licensing import HasWritableLicense
 from .packs import terms_for
 
 
@@ -82,17 +83,17 @@ class TenantScopedMixin:
 class SkillViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = Skill.objects.all()
     serializer_class = SkillSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 class JobRoleViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = JobRole.objects.all()
     serializer_class = JobRoleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 class JobRoleSkillViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
     queryset = JobRoleSkill.objects.order_by('skill__name')
     serializer_class = JobRoleSkillSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
     filter_params = ('job_role', 'skill')
 
 class EmployeeSkillRatingViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
@@ -103,7 +104,7 @@ class EmployeeSkillRatingViewSet(TenantScopedMixin, FilterByParamsMixin, viewset
     """
     queryset = EmployeeSkillRating.objects.order_by('-survey_date')
     serializer_class = EmployeeSkillRatingSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
     filter_params = ('user', 'skill')
 
     def get_queryset(self):
@@ -134,29 +135,29 @@ class EmployeeSkillRatingViewSet(TenantScopedMixin, FilterByParamsMixin, viewset
 class TrainingCalendarViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = TrainingCalendar.objects.all()
     serializer_class = TrainingCalendarSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
 
 class OrgUnitViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = OrgUnit.objects.all()
     serializer_class = OrgUnitSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 # Grades, job families and competency frameworks: the organisation's own
 # classification of its staff and skills. Everyone reads; admins write.
 class GradeViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = Grade.objects.annotate(staff_count=Count('staff', distinct=True)).order_by('rank', 'code')
     serializer_class = GradeSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 class JobFamilyViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = JobFamily.objects.annotate(staff_count=Count('staff', distinct=True)).order_by('name')
     serializer_class = JobFamilySerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 class CompetencyFrameworkViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = CompetencyFramework.objects.annotate(skill_count=Count('skills', distinct=True)).order_by('name')
     serializer_class = CompetencyFrameworkSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 
 class IsTenantAdmin(permissions.BasePermission):
@@ -169,7 +170,7 @@ XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 class ImportTemplateView(APIView):
     """Admin-only: the Excel template for a staff or competency import, with this organisation's grades and posts in its drop-downs."""
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdmin]
 
     def get(self, request, kind):
         if kind not in imports.TEMPLATES:
@@ -185,7 +186,7 @@ class ImportView(APIView):
     Without ``commit=true`` nothing is saved and the response says what each
     row would do; with it the import runs and is recorded as an ImportRun.
     """
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdmin]
 
     def post(self, request, kind):
         if kind not in imports.IMPORTERS:
@@ -212,7 +213,7 @@ class ImportView(APIView):
 class ImportRunViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ReadOnlyModelViewSet):
     queryset = ImportRun.objects.select_related('created_by').order_by('-created_at')
     serializer_class = ImportRunSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdmin]
     filter_params = ('kind',)
 
 class OrgStructureView(APIView):
@@ -220,7 +221,7 @@ class OrgStructureView(APIView):
     Admin-only: the tenant's org units as a nested tree, each with its job roles,
     plus the roles that aren't placed in any unit. Super admins pass ?tenant=<id>.
     """
-    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsSuperAdminOrTenantAdmin]
 
     def get(self, request):
         if request.user.is_superuser:
@@ -292,7 +293,7 @@ def get_tenant_object(request, model, pk):
 
 class MyGapsView(APIView):
     """The logged-in person's skill gaps against their job role."""
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
 
     def get(self, request):
         if request.user.tenant is None:
@@ -302,7 +303,7 @@ class MyGapsView(APIView):
 
 class PersonGapsView(APIView):
     """One person's skill gaps. People can see their own; admins and managers can see anyone in their tenant."""
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
 
     def get(self, request, pk):
         person = get_tenant_object(request, get_user_model(), pk)
@@ -315,7 +316,7 @@ class PersonGapsView(APIView):
 
 class DepartmentGapsView(APIView):
     """Gaps for everyone in an org unit and the units below it, with a breakdown by sub-unit."""
-    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsGapReviewer]
 
     def get(self, request, pk):
         unit = get_tenant_object(request, OrgUnit, pk)
@@ -324,7 +325,7 @@ class DepartmentGapsView(APIView):
 
 class InstitutionGapsView(APIView):
     """Gaps across the whole institution, with a breakdown by top-level unit. Super admins pass ?tenant=<id>."""
-    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsGapReviewer]
 
     def get(self, request):
         if request.user.is_superuser:
@@ -344,7 +345,7 @@ class TNAReportView(APIView):
     ?download=pdf or ?download=xlsx returns the file instead of JSON.
     Super admins pass ?tenant=<id>.
     """
-    permission_classes = [permissions.IsAuthenticated, IsGapReviewer]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsGapReviewer]
     RENDERERS = {
         'pdf': (tna_report.render_pdf, 'application/pdf'),
         'xlsx': (tna_report.render_xlsx, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
@@ -370,6 +371,7 @@ class TNAReportView(APIView):
             tenant = request.user.tenant
 
         report = tna_report.build_report(GapEngine(tenant), unit=unit, period=period)
+        report['watermark'] = licensing.watermark(tenant)
         if not download:
             return Response(report)
         render, content_type = self.RENDERERS[download]
@@ -378,12 +380,32 @@ class TNAReportView(APIView):
         return response
 
 
+class LicenseView(APIView):
+    """
+    The organisation's licence: plan, term, state and staff used against its band.
+    Everyone in the tenant can see it, so the app can warn before it runs out.
+    Super admins pass ?tenant=<id>.
+    """
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense]
+
+    def get(self, request):
+        if request.user.is_superuser:
+            if not request.query_params.get('tenant'):
+                return Response({'tenant': ['This parameter is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            tenant = get_tenant_object(request, Tenant, request.query_params['tenant'])
+        elif request.user.tenant is None:
+            raise Http404
+        else:
+            tenant = request.user.tenant
+        return Response(licensing.summary(tenant))
+
+
 # Tenant ViewSet: super admins create and manage organisations; everyone else
 # sees only their own, and its admins can edit it.
 class TenantViewSet(viewsets.ModelViewSet):
     queryset = Tenant.objects.all()
     serializer_class = TenantSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
 
     def get_queryset(self):
         queryset = super().get_queryset().annotate(
@@ -423,7 +445,7 @@ class TenantViewSet(viewsets.ModelViewSet):
 class InvitationViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = Invitation.objects.select_related('tenant').order_by('-created_at')
     serializer_class = InvitationSerializer
-    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsSuperAdminOrTenantAdmin]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -438,6 +460,7 @@ class InvitationViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.R
         tenant = serializer.validated_data.get('tenant') if request.user.is_superuser else request.user.tenant
         if tenant is None:
             return Response({'tenant': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+        licensing.ensure_room_for(tenant)
         invitation = create_invitation(tenant, serializer.validated_data['email'], serializer.validated_data.get('role', 'employee'), invited_by=request.user)
         return Response(self.get_serializer(invitation).data, status=status.HTTP_201_CREATED)
 
@@ -467,13 +490,13 @@ class AcceptInvitationView(APIView):
 class QuestionnaireViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = Questionnaire.objects.order_by('-created_at')
     serializer_class = QuestionnaireSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
 
 # Question ViewSet (tenant comes from the questionnaire)
 class QuestionViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
     queryset = Question.objects.order_by('text')
     serializer_class = QuestionSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
     filter_params = ('questionnaire',)
 
     def perform_create(self, serializer):
@@ -483,7 +506,7 @@ class QuestionViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelView
 class QuestionChoiceViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
     queryset = QuestionChoice.objects.order_by('id')
     serializer_class = QuestionChoiceSerializer
-    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsTenantAdminOrReadOnly]
     filter_params = ('question', 'question__questionnaire')
 
     def perform_create(self, serializer):
@@ -494,7 +517,7 @@ class QuestionChoiceViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.Mod
 class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     queryset = get_user_model().objects.all()
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
     superadmin_can_write = True
 
     # The staff record HR keeps; people can't change these on their own account.
@@ -516,6 +539,7 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         if not is_tenant_admin(self.request.user):
             raise PermissionDenied('Only tenant admins can add users.')
+        licensing.ensure_room_for(self.request.user.tenant)
         serializer.save(tenant=self.request.user.tenant)
 
     def perform_update(self, serializer):
@@ -531,6 +555,8 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
                 raise PermissionDenied('Only tenant admins can change roles, job roles, staff records or deactivate users.')
         elif changed & {'role', 'is_active'} and serializer.instance.pk == user.pk:
             raise PermissionDenied("You can't change your own role or deactivate yourself.")
+        if serializer.validated_data.get('is_active') and not serializer.instance.is_active and serializer.instance.tenant:
+            licensing.ensure_room_for(serializer.instance.tenant)
         serializer.save()
 
     def perform_destroy(self, instance):
@@ -546,7 +572,7 @@ class UserViewSet(TenantScopedMixin, viewsets.ModelViewSet):
 class QuestionResponseViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
     queryset = QuestionResponse.objects.order_by('-submitted_at')
     serializer_class = QuestionResponseSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
     filter_params = ('question', 'question__questionnaire', 'user')
 
     def get_queryset(self):
@@ -609,7 +635,7 @@ class TrainingPlanViewSet(TenantScopedMixin, viewsets.ModelViewSet):
     """
     queryset = TrainingPlan.objects.select_related('tenant').prefetch_related('programmes__nominations').order_by('-period')
     serializer_class = TrainingPlanSerializer
-    permission_classes = [permissions.IsAuthenticated, IsReviewerReadOnlyOrTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsReviewerReadOnlyOrTenantAdmin]
 
     def retrieve(self, request, *args, **kwargs):
         plan = self.get_object()
@@ -653,7 +679,7 @@ class TrainingPlanViewSet(TenantScopedMixin, viewsets.ModelViewSet):
 class TrainingProgrammeViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets.ModelViewSet):
     queryset = TrainingProgramme.objects.select_related('skill', 'plan').prefetch_related('nominations').order_by('quarter', 'title')
     serializer_class = TrainingProgrammeSerializer
-    permission_classes = [permissions.IsAuthenticated, IsReviewerReadOnlyOrTenantAdmin]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, IsReviewerReadOnlyOrTenantAdmin]
     filter_params = ('plan', 'skill')
 
 
@@ -667,7 +693,7 @@ class TrainingNominationViewSet(TenantScopedMixin, FilterByParamsMixin, viewsets
                 .select_related('user__job_role__org_unit', 'programme__plan', 'programme__skill', 'evaluation__supervisor')
                 .order_by('programme__quarter', 'programme__title', '-priority_score', 'user__username'))
     serializer_class = TrainingNominationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasWritableLicense, HasWritableLicense]
     filter_params = ('programme', 'user', 'status', 'attendance')
     MANAGER_FIELDS = {'attendance', 'days_attended'}
 

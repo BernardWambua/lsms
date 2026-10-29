@@ -28,6 +28,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .models import CompetencyFramework, Grade, JobFamily, JobRole, JobRoleSkill, OrgUnit, Skill, PROFICIENCY_LEVELS
+from . import licensing
 from .packs import terms_for
 
 MAX_ROWS = 5000
@@ -535,6 +536,9 @@ class StaffImporter(Importer):
                     result.action = 'updated'
                 if result.action == 'updated':
                     result.changes.append('supervisor')
+
+        # Checked after the rows so the message gives the total; raising rolls the whole import back.
+        licensing.ensure_within_limit(self.tenant)
 
         in_file = {r.key.lower() for r in self.results if r.key}
         missing = (staff.filter(is_active=True).exclude(staff_number='')

@@ -6,6 +6,7 @@ a training plan generated from the gaps. All of it is invented data.
     python manage.py seed_demo                 # create "Demo State Department"
     python manage.py seed_demo --reset         # delete it first and start again
     python manage.py seed_demo --samples DIR   # also save the filled import files to DIR
+    python manage.py seed_demo --plan pilot    # on a pilot licence (watermarked TNA report)
 """
 
 import datetime
@@ -18,9 +19,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from app import demo_data, imports, training_plan
+from app import demo_data, imports, licensing, training_plan
 from app.gaps import GapEngine
-from app.models import EmployeeSkillRating, JobRoleSkill, Tenant, TrainingPlan
+from app.models import EmployeeSkillRating, JobRoleSkill, LicenseEvent, Tenant, TrainingPlan
 from app.packs import apply_pack
 from app.tna_report import financial_year
 
@@ -35,8 +36,10 @@ class Command(BaseCommand):
         parser.add_argument('--password', default='Demo-pass-2026', help='Password for the demo logins.')
         parser.add_argument('--reset', action='store_true', help='Delete an existing organisation with this name first.')
         parser.add_argument('--samples', metavar='DIR', help='Also save the filled staff and competency import files here.')
+        parser.add_argument('--plan', choices=['standard', 'pilot'], default='standard',
+                            help='Licence to give it: a paid Standard licence for this financial year (default), or the free pilot.')
 
-    def handle(self, *args, name, password, reset, samples, **options):
+    def handle(self, *args, name, password, reset, samples, plan, **options):
         existing = Tenant.objects.filter(name=name)
         if existing.exists():
             if not reset:
@@ -46,6 +49,8 @@ class Command(BaseCommand):
         with transaction.atomic():
             tenant = Tenant.objects.create(name=name)
             apply_pack(tenant, 'kenya_public_service')
+            if plan == 'standard':
+                self.license(tenant)
             staff = imports.StaffImporter(tenant).run(demo_data.staff_sheets(), commit=True)
             competencies = imports.CompetencyImporter(tenant).run(demo_data.competency_sheets(), commit=True)
             self.check_import('Staff', staff)
@@ -78,6 +83,16 @@ class Command(BaseCommand):
         errors = [row for row in result['rows'] if row['action'] == 'error']
         if errors:
             raise CommandError(f'{label} rows failed to import: {errors[:3]}')
+
+    def license(self, tenant):
+        """A paid Standard licence for this financial year, with invented LPO and invoice numbers."""
+        starts_on, ends_on = licensing.financial_year_bounds()
+        license = tenant.license
+        license.plan, license.band, license.starts_on, license.ends_on = 'standard', 'small', starts_on, ends_on
+        license.lpo_number, license.invoice_number = f'LPO/DEMO/{starts_on.year}/001', f'INV-DEMO-{starts_on.year}-001'
+        license.amount = Decimal('300000')
+        license.save()
+        LicenseEvent.objects.create(license=license, summary=f'Demo Standard licence issued until {ends_on:%d %b %Y}.')
 
     def set_up_logins(self, tenant, password):
         User = get_user_model()

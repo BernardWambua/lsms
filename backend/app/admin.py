@@ -2,8 +2,9 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.utils.html import format_html
 
+from . import licensing
 from .invitations import accept_url, send_invitation
-from .models import Grade, JobFamily, CompetencyFramework, ImportRun, Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
+from .models import License, LicenseEvent, Grade, JobFamily, CompetencyFramework, ImportRun, Tenant, User, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar, OrgUnit, Questionnaire, Question, QuestionResponse, QuestionChoice, Invitation, TrainingPlan, TrainingProgramme, TrainingNomination, TrainingEvaluation
 
 
 class InvitationInline(admin.TabularInline):
@@ -31,6 +32,54 @@ class TenantAdmin(admin.ModelAdmin):
                 send_invitation(invitation)
         for obj in formset.deleted_objects:
             obj.delete()
+
+
+class LicenseEventInline(admin.TabularInline):
+    model = LicenseEvent
+    fields = ('created_at', 'summary', 'by')
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(License)
+class LicenseAdmin(admin.ModelAdmin):
+    """
+    Super admins issue and renew licences here when an LPO arrives. Every
+    organisation gets a pilot when it is created; nothing is billed automatically.
+    """
+    list_display = ('tenant', 'plan', 'band', 'ends_on', 'status', 'staff', 'lpo_number', 'paid_on')
+    list_filter = ('plan', 'band', 'suspended')
+    search_fields = ('tenant__name', 'lpo_number', 'invoice_number')
+    readonly_fields = ('tenant',)
+    fieldsets = (
+        (None, {'fields': ('tenant', 'plan', 'band')}),
+        ('Term', {'fields': ('starts_on', 'ends_on', 'grace_days', 'suspended', 'suspended_reason')}),
+        ('Procurement', {'fields': ('lpo_number', 'invoice_number', 'amount', 'paid_on', 'notes')}),
+    )
+    inlines = [LicenseEventInline]
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description='Status')
+    def status(self, obj):
+        return licensing.state(obj).replace('_', '-')
+
+    @admin.display(description='Active staff')
+    def staff(self, obj):
+        limit = licensing.staff_limit(obj)
+        count = licensing.staff_count(obj.tenant)
+        return f'{count:,} of {limit:,}' if limit else f'{count:,}'
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if form.changed_data:
+            labels = ', '.join(str(form.fields[name].label).lower() for name in form.changed_data)
+            LicenseEvent.objects.create(license=obj, by=request.user, summary=f'Changed {labels}. Now {obj}.'[:500])
 
 
 @admin.register(Invitation)
