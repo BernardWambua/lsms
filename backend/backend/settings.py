@@ -150,6 +150,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
+        # Views list their own permissions; each one includes this too (a test checks).
+        'app.licensing.HasWritableLicense',
     ],
 }
 # Where invitation links point (the React app).

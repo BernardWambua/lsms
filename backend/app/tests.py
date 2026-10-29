@@ -1,6 +1,7 @@
 import datetime
 import io
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -15,7 +16,9 @@ from .models import (
     Grade, JobFamily, CompetencyFramework, ImportRun,
     Tenant, OrgUnit, JobRole, Skill, JobRoleSkill, EmployeeSkillRating, TrainingCalendar,
     Questionnaire, Question, QuestionChoice, QuestionResponse, Invitation, TrainingPlan, TrainingNomination,
+    License, LicenseEvent,
 )
+from . import licensing
 
 User = get_user_model()
 PASSWORD = 'a-Strong-pass-123'
@@ -1269,3 +1272,177 @@ class DemoDataTests(TestCase):
         with self.assertRaises(Exception):
             call_command('seed_demo', stdout=io.StringIO())
         call_command('seed_demo', '--reset', stdout=io.StringIO())
+
+
+def set_license(tenant, **fields):
+    License.objects.filter(tenant=tenant).update(**fields)
+
+
+def expired(days_ago):
+    """Licence dates that ended ``days_ago`` days back."""
+    today = datetime.date.today()
+    return {'starts_on': today - timedelta(days=365), 'ends_on': today - timedelta(days=days_ago)}
+
+
+@FAST_HASHER
+class LicenseStateTests(TestCase):
+    def test_new_organisation_starts_on_a_logged_pilot(self):
+        tenant = Tenant.objects.create(name='New Agency')
+        license = tenant.license
+        self.assertEqual((license.plan, license.band, license.starts_on), ('pilot', 'small', datetime.date.today()))
+        self.assertEqual(license.ends_on - license.starts_on, timedelta(days=licensing.PILOT_DAYS))
+        self.assertEqual(LicenseEvent.objects.get(license=license).summary[:21], 'Pilot licence issued ')
+        self.assertEqual(licensing.watermark(tenant), 'PILOT LICENCE - EVALUATION COPY')
+
+    def test_state_runs_active_then_grace_then_read_only(self):
+        license = License(starts_on=datetime.date(2026, 7, 1), ends_on=datetime.date(2027, 6, 30), grace_days=30)
+        self.assertEqual(licensing.state(license, datetime.date(2027, 6, 30)), 'active')
+        self.assertEqual(licensing.state(license, datetime.date(2027, 7, 30)), 'grace')
+        self.assertEqual(licensing.state(license, datetime.date(2027, 7, 31)), 'read_only')
+        license.suspended = True
+        self.assertEqual(licensing.state(license, datetime.date(2027, 1, 1)), 'suspended')
+
+    def test_financial_year_bounds(self):
+        self.assertEqual(licensing.financial_year_bounds(datetime.date(2026, 10, 29)), (datetime.date(2026, 7, 1), datetime.date(2027, 6, 30)))
+        self.assertEqual(licensing.financial_year_bounds(datetime.date(2027, 3, 1)), (datetime.date(2026, 7, 1), datetime.date(2027, 6, 30)))
+
+    def test_every_api_view_checks_the_licence(self):
+        from django.urls import get_resolver
+
+        def views(patterns):
+            for pattern in patterns:
+                if hasattr(pattern, 'url_patterns'):
+                    yield from views(pattern.url_patterns)
+                else:
+                    yield getattr(pattern.callback, 'cls', None)
+
+        unchecked = {
+            view.__name__ for view in views(get_resolver().url_patterns)
+            if view is not None and view.__module__ == 'app.views'
+            and licensing.HasWritableLicense not in view.permission_classes and view.__name__ != 'AcceptInvitationView'
+        }
+        self.assertEqual(unchecked, set())
+
+
+class LicenseEnforcementTests(TenantTestCase):
+    def post_skill(self, user):
+        self.login(user)
+        return self.client.post('/api/skills/', {'name': 'Budgeting', 'difficulty': 3, 'usage_frequency': 3, 'impact_if_missing': 3})
+
+    def test_grace_period_keeps_full_access(self):
+        set_license(self.tenant_a, **expired(days_ago=10))
+        self.assertEqual(self.post_skill(self.admin_a).status_code, 201)
+
+    def test_read_only_after_grace_blocks_changes_but_not_reading(self):
+        set_license(self.tenant_a, **expired(days_ago=31))
+        response = self.post_skill(self.admin_a)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('read-only', response.json()['detail'])
+        self.assertEqual(self.client.get('/api/skills/').status_code, 200)
+        self.assertEqual(self.client.get('/api/license/').json()['state'], 'read_only')
+        # Other organisations are unaffected.
+        self.assertEqual(self.post_skill(User.objects.create_user(username='admin_b', tenant=self.tenant_b, role='admin')).status_code, 201)
+
+    def test_suspension_blocks_changes_with_the_reason(self):
+        set_license(self.tenant_a, suspended=True, suspended_reason='invoice overdue')
+        response = self.post_skill(self.admin_a)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('invoice overdue', response.json()['detail'])
+
+    def test_super_admin_is_not_blocked(self):
+        set_license(self.tenant_a, **expired(days_ago=60))
+        root = User.objects.create_superuser(username='root', password=PASSWORD)
+        self.login(root)
+        response = self.client.post('/api/invitations/', {'email': 'x@acme.com', 'tenant': str(self.tenant_a.pk)})
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_invitation_cannot_be_accepted_while_read_only(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='late@acme.com')
+        set_license(self.tenant_a, **expired(days_ago=60))
+        response = APIClient().post(f'/api/invitations/accept/{invitation.token}/', {'username': 'late', 'password': PASSWORD})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(username='late').exists())
+
+    def test_license_endpoint(self):
+        set_license(self.tenant_a, lpo_number='LPO/123')
+        self.login(self.user_a)
+        data = self.client.get('/api/license/').json()
+        self.assertEqual((data['plan'], data['state'], data['writable'], data['staff_count'], data['staff_limit'], data['lpo_number']),
+                         ('pilot', 'active', True, 2, 300, 'LPO/123'))
+        root = User.objects.create_superuser(username='root', password=PASSWORD)
+        self.login(root)
+        self.assertEqual(self.client.get('/api/license/').status_code, 400)
+        self.assertEqual(self.client.get(f'/api/license/?tenant={self.tenant_b.pk}').json()['staff_count'], 1)
+
+
+@mock.patch.dict(licensing.STAFF_LIMITS, {'small': 2})
+class StaffLimitTests(TenantTestCase):
+    """Acme has two active staff, which fills a band patched down to 2."""
+
+    def test_invitation_refused_at_the_limit(self):
+        self.login(self.admin_a)
+        response = self.client.post('/api/invitations/', {'email': 'new@acme.com'})
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('up to 2 active staff', response.json()['detail'])
+        self.assertFalse(Invitation.objects.exists())
+
+    def test_deactivating_someone_makes_room(self):
+        self.user_a.is_active = False
+        self.user_a.save()
+        self.login(self.admin_a)
+        self.assertEqual(self.client.post('/api/invitations/', {'email': 'new@acme.com'}).status_code, 201)
+
+    def test_accepting_refused_at_the_limit(self):
+        invitation = Invitation.objects.create(tenant=self.tenant_a, email='new@acme.com')
+        response = APIClient().post(f'/api/invitations/accept/{invitation.token}/', {'username': 'newbie', 'password': PASSWORD})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(username='newbie').exists())
+
+    def test_adding_or_reactivating_a_user_refused_at_the_limit(self):
+        self.login(self.admin_a)
+        self.assertEqual(self.client.post('/api/users/', {'username': 'extra', 'password': PASSWORD}).status_code, 403)
+        leaver = User.objects.create_user(username='leaver', tenant=self.tenant_a, is_active=False)
+        self.assertEqual(self.client.patch(f'/api/users/{leaver.pk}/', {'is_active': True}).status_code, 403)
+        leaver.refresh_from_db()
+        self.assertFalse(leaver.is_active)
+
+
+@FAST_HASHER
+@mock.patch.dict(licensing.STAFF_LIMITS, {'small': 6})
+class StaffImportLimitTests(MinistryTestCase):
+    """The ministry has five staff; the HRIS export adds three, past a band patched down to 6."""
+
+    def upload(self, commit):
+        self.client.force_authenticate(user=self.admin)
+        return self.client.post('/api/imports/staff/', {'file': csv_file(HRIS_EXPORT), 'commit': 'true' if commit else 'false'}, format='multipart')
+
+    def test_check_warns_before_anything_is_saved(self):
+        response = self.upload(commit=False)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('This change would bring it to 8.', response.json()['detail'])
+
+    def test_commit_saves_nothing(self):
+        self.assertEqual(self.upload(commit=True).status_code, 403)
+        self.assertFalse(User.objects.filter(staff_number='1001').exists())
+        self.assertFalse(ImportRun.objects.exists())
+
+    def test_fits_once_the_band_is_larger(self):
+        set_license(self.tenant, band='medium')
+        self.assertEqual(self.upload(commit=True).status_code, 200)
+
+
+class TNAReportWatermarkTests(MinistryTestCase):
+    URL = '/api/reports/tna/'
+
+    def test_pilot_report_is_watermarked(self):
+        self.assertEqual(self.ok(self.admin, self.URL)['watermark'], 'PILOT LICENCE - EVALUATION COPY')
+        sheet = load_workbook(io.BytesIO(self.get(self.admin, f'{self.URL}?download=xlsx').content))['Summary']
+        self.assertEqual((sheet['A1'].value, sheet['A2'].value), ('PILOT LICENCE - EVALUATION COPY', 'Ministry'))
+        pdf = self.get(self.admin, f'{self.URL}?download=pdf')
+        self.assertEqual(pdf.status_code, 200)
+
+    def test_paid_report_is_not(self):
+        set_license(self.tenant, plan='standard')
+        self.assertEqual(self.ok(self.admin, self.URL)['watermark'], '')
+        sheet = load_workbook(io.BytesIO(self.get(self.admin, f'{self.URL}?download=xlsx').content))['Summary']
+        self.assertEqual(sheet['A1'].value, 'Ministry')

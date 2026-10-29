@@ -23,7 +23,7 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-For a demo, `python manage.py seed_demo` loads **Demo State Department**, an invented institution with 36 officers, a sample competency framework, ratings and a training plan, and prints the demo logins (HR admin, manager and employee). `--reset` rebuilds it; `--samples <folder>` also saves the filled staff and competency import files for trying the upload yourself. All of it is made-up data.
+For a demo, `python manage.py seed_demo` loads **Demo State Department**, an invented institution with 36 officers, a sample competency framework, ratings and a training plan, and prints the demo logins (HR admin, manager and employee). `--reset` rebuilds it; `--samples <folder>` also saves the filled staff and competency import files for trying the upload yourself. All of it is made-up data. It gets a Standard licence for the current financial year; `--plan pilot` gives it the free pilot instead, so the TNA report carries the evaluation watermark.
 
 Settings come from environment variables; see `backend/.env.example`. Without them the app runs with development defaults.
 
@@ -138,6 +138,16 @@ Each person can carry a staff record: staff number (unique per organisation, sho
 - **Competency framework**: the competencies (matched on code within their framework), plus an optional *Role requirements* sheet with the level each post requires, which becomes the post's skill profile.
 
 Every upload is checked first (`POST /api/imports/<staff|competencies>/` with `file`): the response says what each row would do and nothing is saved. Sending `commit=true` runs the import and records it (`GET /api/import-runs/`). Templates: `GET /api/imports/<kind>/template/`. Grades, job families and frameworks also have their own endpoints: `/api/grades/`, `/api/job-families/`, `/api/competency-frameworks/`.
+
+## Licences
+
+Each organisation holds one annual licence (`License`, managed by super admins in Django admin under **Licenses**; nothing is billed automatically). The rules live in `backend/app/licensing.py`.
+
+- **Plans**: every new organisation starts on a free **Pilot** for 180 days; its TNA report PDF and Excel carry an evaluation watermark. **Standard** and **Enterprise** are paid and unwatermarked. Organisations that existed before licensing were given a Standard licence for the current financial year.
+- **Staff bands** set the most active staff an organisation can have: Small 300, Medium 1,500, Large 5,000, or no limit. Inviting, adding or reactivating someone, accepting an invitation, or a staff import (already at the check step) is refused once the band is full.
+- **Term**: usually the financial year, 1 July to 30 June, set when the LPO arrives. After `ends_on` the organisation keeps full access for `grace_days` (30 by default), then becomes **read-only**: everyone can still sign in, view everything and download reports, but changes are refused. Ticking **suspended** makes it read-only straight away. Super admins are never blocked.
+- `GET /api/license/` returns the plan, term, state, days left and staff used (`?tenant=<id>` for super admins). Admins see the licence at **Admin > Licence** and a banner from 60 days before it ends; everyone sees a banner while it is read-only.
+- Every API view lists `HasWritableLicense` in its `permission_classes` (a test checks), which is what makes a lapsed licence read-only.
 
 ## Conventions
 

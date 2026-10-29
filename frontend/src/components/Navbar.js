@@ -40,6 +40,7 @@ const LINKS = [
   { group: 'Reports', to: '/reports/tna', label: 'TNA report', roles: ['admin', 'manager'] },
   { group: 'Admin', to: '/classification', label: 'Classification', roles: ['admin'] },
   { group: 'Admin', to: '/imports', label: 'Import', roles: ['admin'] },
+  { group: 'Admin', to: '/license', label: 'Licence', roles: ['admin'] },
 ];
 
 // Detail pages that belong to a link without sharing its path prefix.

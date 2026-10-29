@@ -330,6 +330,18 @@ def render_pdf(report):
     width = pagesize[0] - 30 * mm
     institution = report['institution']['name']
 
+    stamp = report.get('watermark')
+
+    def watermark(canvas):
+        # Over the content, across the middle of the page, faint enough to read the tables through.
+        canvas.saveState()
+        canvas.setFont('Helvetica-Bold', 36)
+        canvas.setFillColor(colors.HexColor('#c62828'), alpha=0.15)
+        canvas.translate(pagesize[0] / 2, pagesize[1] / 2)
+        canvas.rotate(25)
+        canvas.drawCentredString(0, -12, stamp)
+        canvas.restoreState()
+
     def footer(canvas, doc):
         canvas.saveState()
         canvas.setFont('Helvetica', 7.5)
@@ -382,6 +394,8 @@ def render_pdf(report):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm, bottomMargin=16 * mm,
                             title=f"{report['title']} {report['period']}", author=institution)
+    if stamp:
+        doc.afterPage = lambda: watermark(doc.canv)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return buffer.getvalue()
 
@@ -401,10 +415,14 @@ def render_xlsx(report):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Summary'
+    stamp = report.get('watermark')
+    if stamp:
+        sheet.append([stamp])
+        sheet.cell(sheet.max_row, 1).font = Font(bold=True, color='C62828')
     sheet.append([report['institution']['name']])
+    sheet.cell(sheet.max_row, 1).font = Font(bold=True, size=12)
     sheet.append([report['title']])
-    sheet['A1'].font = Font(bold=True, size=12)
-    sheet['A2'].font = Font(bold=True, size=14)
+    sheet.cell(sheet.max_row, 1).font = Font(bold=True, size=14)
     sheet.append(['Financial year', report['period']])
     sheet.append(['Scope', scope_label(report)])
     sheet.append(['Generated', report['generated_at']])
@@ -435,12 +453,16 @@ def render_xlsx(report):
         for row in rows:
             ws.append(row)
         ws.freeze_panes = 'A2'
+        if stamp:
+            ws.oddHeader.center.text = stamp
         if rows:
             ws.auto_filter.ref = ws.dimensions
         for index, name in enumerate(header, 1):
             longest = max([len(str(name))] + [len(str(row[index - 1])) for row in rows])
             ws.column_dimensions[get_column_letter(index)].width = min(max(longest + 2, 8), 60)
 
+    if stamp:
+        sheet.oddHeader.center.text = stamp
     add_sheet('Departments', *organisational_table(report))
     add_sheet('Job roles', *occupational_table(report))
     add_sheet('Training needs', *needs_table(report))

@@ -6,6 +6,7 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
+from . import licensing
 from .models import Invitation
 
 
@@ -43,6 +44,8 @@ def accept_invitation(token, username, password, first_name='', last_name=''):
         invitation = Invitation.objects.select_for_update().select_related('tenant').filter(token=token).first()
         if invitation is None or not invitation.is_pending:
             raise InvitationUnavailable()
+        licensing.ensure_writable(invitation.tenant)
+        licensing.ensure_room_for(invitation.tenant)
 
         User = get_user_model()
         # The first person into an organisation runs it, whatever the invite said.

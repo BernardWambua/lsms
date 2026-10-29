@@ -460,3 +460,27 @@ test('on narrow screens the navbar links move into a drawer', async () => {
     window.matchMedia = original;
   }
 });
+
+const LICENSE = {
+  plan: 'pilot', plan_label: 'Pilot', band: 'small', band_label: 'Small (up to 300 staff)', staff_limit: 300, staff_count: 212,
+  starts_on: '2026-07-01', ends_on: '2027-06-30', grace_ends_on: '2027-07-30', days_left: 244, state: 'active', writable: true,
+  suspended_reason: '', watermark: 'PILOT LICENCE - EVALUATION COPY', lpo_number: '',
+};
+
+test('admins see their licence: plan, term and staff used against the band', async () => {
+  window.history.pushState({}, '', '/license');
+  loggedInAs({ id: 'u1', username: 'ada', is_superuser: false, tenant: 't1', role: 'admin' }, { '/license/': LICENSE });
+  render(<App />);
+  expect(await screen.findByText('212 of 300')).toBeInTheDocument();
+  expect(screen.getByText('1 Jul 2026 to 30 Jun 2027')).toBeInTheDocument();
+  expect(screen.getByText(/free pilot/i)).toBeInTheDocument();
+  expect(screen.getByText('Active')).toBeInTheDocument();
+});
+
+test('everyone is told when the licence has lapsed and LSMS is read-only', async () => {
+  loggedInAs({ id: 'u2', username: 'bob', is_superuser: false, tenant: 't1', role: 'employee' }, {
+    '/license/': { ...LICENSE, state: 'read_only', days_left: -40, writable: false },
+  });
+  render(<App />);
+  expect(await screen.findByText(/licence ended on 30 Jun 2027\. LSMS is read-only/)).toBeInTheDocument();
+});
